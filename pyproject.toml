@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minitopol"
+version = "0.1.0"
+description = "Streaming molecular trajectory registry and descriptor storage"
+requires-python = ">=3.11"
+dependencies = ["numpy>=2,<3", "MDAnalysis>=2.10,<3", "zarr>=3.1,<4", "pyarrow>=18", "duckdb>=1.2,<2", "filelock>=3.16"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+minitopol = "minitopol.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
