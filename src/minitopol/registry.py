@@ -56,20 +56,31 @@ class Registry:
                 raise ValueError("Representation references atoms absent from this A topology")
             if not np.isfinite(weights).all() or not np.isclose(sum(weights), 1, rtol=0, atol=1e-12):
                 raise ValueError("Explicit finite weights must sum to one")
+        normalized = self._normalize_descriptors(name, descriptor_definitions)
+        definition = canonical({"schema": 1, "version": version, "groups": groups,
+                                "topology_identity": topology_identity,
+                                "descriptor_definitions": normalized})
+        with self.workspace.catalog() as con:
+            previous = con.execute("SELECT definition FROM representations WHERE id = ?", [name]).fetchone()
+            if previous:
+                import json
+                old = json.loads(previous[0])
+                old["descriptor_definitions"] = self._normalize_descriptors(name, old["descriptor_definitions"])
+                if canonical(old) != definition:
+                    raise ValueError("Registered definitions are immutable; use a new representation ID")
+            con.execute("INSERT INTO representations VALUES (?, ?) ON CONFLICT DO NOTHING", [name, definition])
+        return name
+
+    @staticmethod
+    def _normalize_descriptors(name, definitions):
         from .descriptors.definitions import DescriptorDefinition
-        for key, value in descriptor_definitions.items():
+        normalized = {}
+        for key, value in definitions.items():
             descriptor = DescriptorDefinition(**value)
             if descriptor.name != key or descriptor.representation != name:
                 raise ValueError("Descriptor definitions must match their name and C representation")
-        definition = canonical({"schema": 1, "version": version, "groups": groups,
-                                "topology_identity": topology_identity,
-                                "descriptor_definitions": descriptor_definitions})
-        with self.workspace.catalog() as con:
-            previous = con.execute("SELECT definition FROM representations WHERE id = ?", [name]).fetchone()
-            if previous and previous[0] != definition:
-                raise ValueError("Registered definitions are immutable; use a new representation ID")
-            con.execute("INSERT INTO representations VALUES (?, ?) ON CONFLICT DO NOTHING", [name, definition])
-        return name
+            normalized[key] = descriptor.as_dict()
+        return normalized
 
     @staticmethod
     def _topology_identity(topology):
@@ -83,7 +94,9 @@ class Registry:
             row = con.execute("SELECT definition FROM representations WHERE id = ?", [name]).fetchone()
         if not row:
             raise KeyError(name)
-        return json.loads(row[0])
+        definition = json.loads(row[0])
+        definition["descriptor_definitions"] = self._normalize_descriptors(name, definition["descriptor_definitions"])
+        return definition
 
     def manifest(self, trajectory):
         result = read_json(self.workspace.trajectory_path(trajectory) / "manifest.json")

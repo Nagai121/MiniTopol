@@ -5,7 +5,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ..registry import Registry
-from ..storage import atomic_json, atomic_parquet, canonical, digest, read_json
+from ..storage import atomic_json, atomic_parquet, canonical, digest, fingerprint, read_json
+
+
+def _payload_hash(table):
+    buffer = pa.BufferOutputStream()
+    with pa.ipc.new_stream(buffer, table.schema) as stream:
+        stream.write_table(table.combine_chunks())
+    return hashlib.sha256(buffer.getvalue()).hexdigest()
 
 
 class ResultStore:
@@ -32,10 +39,7 @@ class ResultStore:
                 raise ValueError("Frame values must be non-null integers")
             if len(frame) and (min(frame) < start or max(frame) >= stop):
                 raise ValueError("Frame rows lie outside the published interval")
-        buffer = pa.BufferOutputStream()
-        with pa.ipc.new_stream(buffer, table.schema) as stream:
-            stream.write_table(table.combine_chunks())
-        payload_hash = hashlib.sha256(buffer.getvalue()).hexdigest()
+        payload_hash = _payload_hash(table)
         info = {"trajectory": trajectory, "source_identity": manifest["identity"],
                 "definition": definition.as_dict(), "start": start, "stop": stop}
         result_id = digest(info)
@@ -52,8 +56,7 @@ class ResultStore:
                     raise IOError("Published descriptor files are missing or inconsistent")
                 if completed["payload_hash"] != payload_hash:
                     raise ValueError("Retry produced different values for the same calculation identity")
-                if pq.read_metadata(path).num_rows != completed["rows"]:
-                    raise IOError("Published descriptor row count differs from completion record")
+                self._verify_completed(path, completed)
                 # Never overwrite an already completed scientific result.
                 self._register(result_id, relative, completed)
                 return result_id
@@ -69,10 +72,55 @@ class ResultStore:
                 table = table.append_column(key, pa.array([value] * len(table), type=pa.string()))
             table = table.replace_schema_metadata({b"minitopol": canonical(info).encode()})
             atomic_parquet(path, table)
-            completed = {"schema": 1, "info": info, "rows": len(table), "payload_hash": payload_hash}
+            completed = {"schema": 2, "info": info, "rows": len(table), "payload_hash": payload_hash,
+                         "file_sha256": fingerprint(path)["sha256"]}
             atomic_json(sidecar, completed)
             self._register(result_id, relative, completed)
         return result_id
+
+    @staticmethod
+    def _verify_completed(path, completed):
+        if completed.get("schema") not in (1, 2):
+            raise IOError("Unsupported descriptor completion schema")
+        if digest(completed["info"]) != path.stem:
+            raise IOError("Descriptor completion record identity mismatch")
+        if not path.is_file():
+            raise IOError("Completed descriptor file is missing")
+        metadata = pq.read_metadata(path)
+        if metadata.num_rows != completed["rows"]:
+            raise IOError("Descriptor completion record row count mismatch")
+        saved = (metadata.metadata or {}).get(b"minitopol")
+        if saved != canonical(completed["info"]).encode():
+            raise IOError("Descriptor metadata differs from completion record")
+        if completed["schema"] == 2:
+            if fingerprint(path)["sha256"] != completed["file_sha256"]:
+                raise IOError("Descriptor file checksum mismatch")
+        else:
+            # Schema 1 stored only an IPC hash of the caller's original table.
+            # Verify that when possible. Never trust row counts as a substitute
+            # for value validation; ambiguous legacy data must be reported.
+            table = pq.ParquetFile(path).read()
+            fields = [c for c in table.column_names if c not in
+                      {"trajectory", "representation", "descriptor", "definition_id"}]
+            original = table.select(fields).replace_schema_metadata(None)
+            if _payload_hash(original) != completed["payload_hash"]:
+                raise IOError("Legacy descriptor payload checksum mismatch; cannot verify stored values")
+
+    def is_complete(self, result_id):
+        """Only skip a catalogued partition after checking its persisted data."""
+        with self.workspace.catalog() as con:
+            row = con.execute("SELECT path FROM results WHERE id = ?", [result_id]).fetchone()
+        if row is None:
+            return False
+        path = self.workspace.path / row[0]
+        sidecar = path.with_suffix(".json")
+        if not sidecar.is_file():
+            raise IOError("Completed descriptor completion record is missing")
+        completed = read_json(sidecar)
+        with self.workspace.lock("result-" + digest([
+                completed["info"]["trajectory"], digest(completed["info"]["definition"])])):
+            self._verify_completed(path, completed)
+        return True
 
     def _register(self, result_id, relative, completed):
         info = completed["info"]
@@ -97,10 +145,7 @@ class ResultStore:
             with self.workspace.lock("result-" + digest([
                     completed["info"]["trajectory"], digest(completed["info"]["definition"])])):
                 path = sidecar.with_suffix(".parquet")
-                if digest(completed["info"]) != sidecar.stem:
-                    raise IOError("Descriptor completion record identity mismatch")
-                if pq.read_metadata(path).num_rows != completed["rows"]:
-                    raise IOError("Descriptor completion record row count mismatch")
+                self._verify_completed(path, completed)
                 self._register(sidecar.stem, path.relative_to(self.workspace.path).as_posix(), completed)
                 count += 1
         return count

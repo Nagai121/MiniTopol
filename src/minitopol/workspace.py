@@ -12,9 +12,8 @@ from .storage import digest, identifier
 
 class Workspace:
     def __init__(self, path=None):
-        # The default is relative to the invocation directory, so a source
-        # checkout naturally creates MiniTopol/BaseTraj_Workspace.
-        self.path = Path(path or os.environ.get("MINITOPOL_WORKSPACE", "BaseTraj_Workspace")).resolve()
+        requested = path if path is not None else os.environ.get("MINITOPOL_WORKSPACE")
+        self.path = Path(requested if requested is not None else self.default_path()).resolve()
         self.path.mkdir(parents=True, exist_ok=True)
         for directory in ("trajectories", "descriptors", "locks"):
             (self.path / directory).mkdir(exist_ok=True)
@@ -35,6 +34,16 @@ class Workspace:
                 definition VARCHAR NOT NULL, start_frame BIGINT NOT NULL,
                 stop_frame BIGINT NOT NULL, path VARCHAR UNIQUE NOT NULL,
                 rows BIGINT NOT NULL)""")
+
+    @staticmethod
+    def default_path():
+        """Anchor source installs to the project, independently of shell cwd."""
+        project = Path(__file__).resolve().parents[2]
+        if (project / "pyproject.toml").is_file() and (project / "src" / "minitopol").is_dir():
+            return project / "BaseTraj_Workspace"
+        # Wheels have no source project directory. Keep their default writable
+        # and stable, while preserving the explicit path/environment overrides.
+        return Path.home() / "MiniTopol" / "BaseTraj_Workspace"
 
     @contextmanager
     def catalog(self):

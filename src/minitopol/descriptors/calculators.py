@@ -23,9 +23,7 @@ def calculate_frames(workspace, trajectory, definition, calculator, *, chunk_fra
     for block in registry.blocks(trajectory, definition.representation, chunk_frames=chunk_frames):
         identity = digest({"trajectory": trajectory, "source_identity": manifest["identity"],
                            "definition": definition.as_dict(), "start": block.start, "stop": block.stop})
-        with workspace.catalog() as con:
-            exists = con.execute("SELECT 1 FROM results WHERE id = ?", [identity]).fetchone()
-        if not exists:
+        if not store.is_complete(identity):
             table = calculator(block)
             if "frame" not in table.column_names:
                 raise ValueError("Per-frame calculators must return an explicit frame column")
