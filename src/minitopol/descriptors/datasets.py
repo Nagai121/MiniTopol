@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 
 from ..registry import Registry
 from ..storage import atomic_json, atomic_parquet, canonical, digest, fingerprint, read_json
-from .results import _payload_hash
+from .results import _payload_hash, with_result_metadata
 
 
 def verify_part(path, part, info):
@@ -34,6 +34,24 @@ def verify_dataset(path, completed):
         rows += part["rows"]
     if rows != completed["rows"]:
         raise IOError("Descriptor dataset total row count mismatch")
+
+
+def validate_table(table, stop):
+    if not isinstance(table, pa.Table) or "value" not in table.column_names:
+        raise ValueError("A descriptor part must be an Arrow table with a value column")
+    reserved = {"trajectory", "representation", "descriptor", "definition_id"}
+    if reserved.intersection(table.column_names) or len(set(table.column_names)) != len(table.column_names):
+        raise ValueError("Duplicate or reserved result column")
+    for field in table.schema:
+        if pa.types.is_floating(field.type) and pc.all(pc.fill_null(pc.is_finite(table[field.name]), True)).as_py() is False:
+            raise ValueError("Non-finite descriptor output must be represented by null with a reason")
+    if "frame" in table.column_names:
+        col = table["frame"]
+        if not pa.types.is_integer(col.type) or (col.null_count and "level" not in table.column_names):
+            raise ValueError("Frame indices must be integers; mixed aggregate rows need an explicit level")
+        data = col.drop_null().to_numpy()
+        if len(data) and (data.min() < 0 or data.max() >= stop):
+            raise ValueError("Result frame is outside the trajectory")
 
 
 class DatasetWriter:
@@ -93,21 +111,7 @@ class DatasetWriter:
     def append(self, key, table):
         if self.complete:
             raise ValueError("Completed datasets cannot be overwritten")
-        if not isinstance(table, pa.Table) or "value" not in table.column_names:
-            raise ValueError("A descriptor part must be an Arrow table with a value column")
-        reserved = {"trajectory", "representation", "descriptor", "definition_id"}
-        if reserved.intersection(table.column_names) or len(set(table.column_names)) != len(table.column_names):
-            raise ValueError("Duplicate or reserved result column")
-        for field in table.schema:
-            if pa.types.is_floating(field.type) and pc.all(pc.fill_null(pc.is_finite(table[field.name]), True)).as_py() is False:
-                raise ValueError("Non-finite descriptor output must be represented by null with a reason")
-        if "frame" in table.column_names:
-            col = table["frame"]
-            if not pa.types.is_integer(col.type) or (col.null_count and "level" not in table.column_names):
-                raise ValueError("Frame indices must be integers; mixed aggregate rows need an explicit level")
-            data = col.drop_null().to_numpy()
-            if len(data) and (data.min() < 0 or data.max() >= self.info["stop"]):
-                raise ValueError("Result frame is outside the trajectory")
+        validate_table(table, self.info["stop"])
         key, checksum = str(key), _payload_hash(table)
         undefined = table["value"].null_count
         if self.has(key):
@@ -115,10 +119,7 @@ class DatasetWriter:
                 raise ValueError("Resumed descriptor part produced different values")
             return
         part_file = f"{self.result_id}/part-{len(self.state['parts']):08d}.parquet"
-        for name, value in (("trajectory", self.info["trajectory"]), ("representation", "A"),
-                            ("descriptor", self.definition.name), ("definition_id", self.definition.identity)):
-            table = table.append_column(name, pa.array([value] * len(table), type=pa.string()))
-        table = table.replace_schema_metadata({b"minitopol": canonical(self.info).encode()})
+        table = with_result_metadata(table, self.info)
         child = self.path.parent / part_file
         atomic_parquet(child, table)
         part = {"key": key, "file": part_file, "rows": len(table),

@@ -440,3 +440,74 @@ def test_cache_cleanup_preserves_unrecognized_user_file(protein,monkeypatch):
     assert report['status']=='complete'
     assert 'cache_retained' in report
     assert saved[0].read_text()=='keep this user data'
+
+
+@pytest.mark.parametrize('damage', ['positions', 'time', 'changed_values', 'missing_check', 'legacy'])
+def test_damaged_alignment_cache_is_never_published(protein, damage):
+    from minitopol.descriptors.context import AnalysisContext
+    from minitopol.storage import atomic_json, read_json
+    ws, tid, _ = protein
+    options = dict(coordinate_mode='nonperiodic', chunk_frames=3)
+    ctx = AnalysisContext(ws, tid, **options)
+    with ctx.cache_lock:
+        ctx.prepare_aligned()
+        if damage in ('positions', 'time'):
+            chunks = sorted(p for p in (ctx.cache_path / 'aligned.zarr' / damage / 'c').rglob('*') if p.is_file())
+            chunks[1].unlink()
+        elif damage == 'changed_values':
+            ctx.cache['positions'][3, 0, 0] += 1.0
+        elif damage == 'missing_check':
+            (ctx.cache_path / 'aligned-checksums' / '3').unlink()
+        else:
+            state = read_json(ctx.cache_path / 'state')
+            state.pop('schema')
+            atomic_json(ctx.cache_path / 'state', state)
+    report = analyze(ws, tid, descriptors=['rmsf'], **options)
+    assert report['status'] == 'incomplete'
+    assert 'cache' in report['results']['rmsf']['reason']
+    with ws.catalog() as con:
+        assert con.execute('SELECT count(*) FROM results').fetchone() == (0,)
+    assert not list((ws.path / 'descriptors').rglob('*.json'))
+    assert ctx.cache_path.exists()  # No damaged or legacy input is deleted.
+
+
+def test_alignment_cache_commit_interruption_resumes_exactly(protein, monkeypatch):
+    from minitopol.coordinates import fit_positions
+    from minitopol.descriptors import alignment_cache
+    from minitopol.descriptors.context import AnalysisContext
+    ws, tid, _ = protein
+    options = dict(coordinate_mode='nonperiodic', chunk_frames=3)
+    ctx = AnalysisContext(ws, tid, **options)
+    original = alignment_cache.atomic_json
+    def interrupt(path, data):
+        if path.name == 'state' and data.get('committed') == 6:
+            raise RuntimeError('interrupt after cache checksum but before commit')
+        return original(path, data)
+    monkeypatch.setattr(alignment_cache, 'atomic_json', interrupt)
+    with ctx.cache_lock, pytest.raises(RuntimeError, match='before commit'):
+        ctx.prepare_aligned()
+    monkeypatch.setattr(alignment_cache, 'atomic_json', original)
+    resumed = AnalysisContext(ws, tid, **options)
+    with resumed.cache_lock:
+        actual = np.concatenate([p for _, _, p, _ in resumed.aligned_blocks()])
+    raw = np.concatenate([block.positions for block in Registry(ws).blocks(tid)]).astype(float)
+    ca = resumed.ca_indices()
+    expected = np.array([fit_positions(frame, raw[0], ca) for frame in raw])
+    np.testing.assert_array_equal(actual, expected)
+    # An intact completed cache is reusable without reading source coordinates.
+    reused = AnalysisContext(ws, tid, **options)
+    def no_source_reads():
+        raise AssertionError('completed cache should be verified and reused')
+    monkeypatch.setattr(reused, 'coordinate_blocks', no_source_reads)
+    with reused.cache_lock:
+        reused.prepare_aligned()
+    report = analyze(ws, tid, descriptors=['rmsf'], **options)
+    assert report['status'] == 'complete', report
+    mean = np.zeros_like(expected[0])
+    m2 = np.zeros_like(mean)
+    for count, frame in enumerate(expected, 1):
+        delta = frame - mean
+        mean += delta / count
+        m2 += delta * (frame - mean)
+    actual_rmsf = [r['value'] for r in sorted(rows(ws, 'rmsf'), key=lambda r: r['point'])]
+    np.testing.assert_array_equal(actual_rmsf, np.sqrt((np.maximum(m2, 0) / len(expected)).sum(axis=1)))

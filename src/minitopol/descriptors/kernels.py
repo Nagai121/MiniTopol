@@ -92,6 +92,18 @@ def backbone_angles(positions, box, quads, reasons, *, periodic):
     return values, why
 
 
+def backbone_frames(ctx, writer):
+    """Yield uncommitted frames with shared backbone angles and missing reasons."""
+    quads, reasons = backbone_quads(ctx)
+    for block in ctx.registry.blocks(ctx.trajectory, chunk_frames=ctx.chunk):
+        for offset, xyz in enumerate(block.positions):
+            frame = block.start + offset
+            if writer.has(frame):
+                continue
+            angles, why = backbone_angles(xyz, block.box[offset], quads, reasons, periodic=ctx.mode != "nonperiodic")
+            yield frame, block.time[offset], angles, why
+
+
 def secondary_labels(phi, psi):
     labels = np.full(len(phi), "other", dtype=object)
     helix = (phi >= -100) & (phi <= -30) & (psi >= -80) & (psi <= -5)

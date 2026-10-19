@@ -15,6 +15,15 @@ def _payload_hash(table):
     return hashlib.sha256(buffer.getvalue()).hexdigest()
 
 
+def with_result_metadata(table, info):
+    """Attach the common result columns in their established order."""
+    definition = info["definition"]
+    for name, value in (("trajectory", info["trajectory"]), ("representation", definition["representation"]),
+                        ("descriptor", definition["name"]), ("definition_id", digest(definition))):
+        table = table.append_column(name, pa.array([value] * len(table), type=pa.string()))
+    return table.replace_schema_metadata({b"minitopol": canonical(info).encode()})
+
+
 class ResultStore:
     def __init__(self, workspace):
         self.workspace = workspace
@@ -67,10 +76,7 @@ class ResultStore:
                     [trajectory, definition.representation, canonical(definition.as_dict()), stop, start]).fetchone()
             if overlap:
                 raise ValueError("Overlapping results for the same calculation definition")
-            for key, value in (("trajectory", trajectory), ("representation", definition.representation),
-                               ("descriptor", definition.name), ("definition_id", definition.identity)):
-                table = table.append_column(key, pa.array([value] * len(table), type=pa.string()))
-            table = table.replace_schema_metadata({b"minitopol": canonical(info).encode()})
+            table = with_result_metadata(table, info)
             atomic_parquet(path, table)
             completed = {"schema": 2, "info": info, "rows": len(table), "payload_hash": payload_hash,
                          "file_sha256": fingerprint(path)["sha256"]}

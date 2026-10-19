@@ -4,11 +4,10 @@ from importlib.resources import files
 import json
 
 import numpy as np
-import zarr
 
-from ..coordinates import fit_positions
 from ..registry import Registry
-from ..storage import atomic_json, digest, read_json
+from ..storage import digest
+from .alignment_cache import prepare_aligned_cache
 
 
 PROTEIN_NAMES = frozenset("ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL HID HIE HIP HSD HSE HSP ASH GLH CYX CYM LYN MSE".split())
@@ -95,41 +94,7 @@ class AnalysisContext:
     def prepare_aligned(self):
         if self.cache is not None:
             return
-        ca = self.ca_indices()
-        if len(ca) < 3:
-            raise ValueError("At least three non-collinear C-alpha atoms are required for aligned descriptors")
-        self.cache_path.mkdir(parents=True, exist_ok=True)
-        marker = self.cache_path / "state"
-        state = read_json(marker) if marker.exists() else {"committed": 0, "layout": self.layout}
-        if state["layout"] != self.layout:
-            raise ValueError("Coordinate cache layout mismatch")
-        cache = zarr.open_group(str(self.cache_path / "aligned.zarr"), mode="a", zarr_format=3)
-        for name, shape, chunks in (("positions", (self.n, self.m, 3), (self.chunk, min(32, self.m), 3)),
-                                    ("time", (self.n,), (self.chunk,))):
-            if name not in cache:
-                if state["committed"]:
-                    raise IOError("Committed coordinate cache data is missing")
-                cache.create_array(name, shape=shape, chunks=chunks, dtype="f8")
-            elif cache[name].shape != shape:
-                raise IOError("Coordinate cache shape mismatch")
-        if state["committed"] < self.n:
-            reference = None
-            for block in self.coordinate_blocks():
-                if reference is None:
-                    reference = block.positions[0].copy()
-                    fit_positions(reference, reference, ca)
-                if block.stop <= state["committed"]:
-                    continue
-                if block.start != state["committed"]:
-                    raise IOError("Coordinate cache commit boundary mismatch")
-                aligned = np.empty_like(block.positions)
-                for index, frame in enumerate(block.positions):
-                    aligned[index] = fit_positions(frame, reference, ca)
-                cache["positions"][block.start:block.stop] = aligned
-                cache["time"][block.start:block.stop] = block.time
-                state["committed"] = block.stop
-                atomic_json(marker, state)
-        self.cache = cache
+        self.cache = prepare_aligned_cache(self)
 
     def read_aligned(self, start, stop, indices=None):
         self.prepare_aligned()

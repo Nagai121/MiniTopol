@@ -90,7 +90,7 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
             # Only this run's owned intermediate coordinate/FFT cache is removed.
             # User trajectories, annotations, partial outputs and results remain.
             ctx.cache = None
-            owned = {"state", "aligned.zarr", "msd", "time-correlation-scratch.zarr"}
+            owned = {"state", "aligned.zarr", "aligned-checksums", "msd", "time-correlation-scratch.zarr"}
             if {p.name for p in ctx.cache_path.iterdir()}.issubset(owned):
                 shutil.rmtree(ctx.cache_path)
             else:
