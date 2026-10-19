@@ -18,6 +18,7 @@ def calculate_frames(workspace, trajectory, definition, calculator, *, chunk_fra
     in the definition; MiniTopol does not infer scientific semantics from code.
     """
     registry, store = Registry(workspace), ResultStore(workspace)
+    definition.register(workspace)
     manifest = registry.manifest(trajectory)
     partitions = 0
     for block in registry.blocks(trajectory, definition.representation, chunk_frames=chunk_frames):

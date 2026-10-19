@@ -108,6 +108,19 @@ class Registry:
         self.manifest(trajectory)
         return pq.read_table(self.workspace.trajectory_path(trajectory) / "atoms.parquet")
 
+    def annotate(self, trajectory, **kwargs):
+        from .annotations import annotate
+        return annotate(self, trajectory, **kwargs)
+
+    def annotations(self, trajectory):
+        from .annotations import annotations
+        self.manifest(trajectory)
+        return annotations(self, trajectory)
+
+    def coordinate_blocks(self, trajectory, **kwargs):
+        from .coordinates import coordinate_blocks
+        return coordinate_blocks(self, trajectory, **kwargs)
+
     def validate_representation(self, trajectory, representation):
         definition = self.definition(representation)
         if representation != "A" and definition["topology_identity"] != self._topology_identity(self.atoms(trajectory)):

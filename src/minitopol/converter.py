@@ -64,7 +64,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                             "gro_path": str(Path(gro).resolve()), "xtc_path": str(Path(xtc).resolve()),
                             "element_origin": element_origin, "frames": frames, "atoms": atoms,
                             "committed_frames": 0, "status": "converting",
-                            "coordinate_unit": "angstrom", "time_unit": "ps", "bonds": "not supplied"}
+                            "coordinate_unit": "angstrom", "time_unit": "ps"}
                 atomic_json(manifest_path, manifest)
             group = zarr.open_group(str(path / "A.zarr"), mode="a", zarr_format=3)
             specs = {"positions": ((frames, atoms, 3), (chunk_frames, atoms, 3), "f4"),

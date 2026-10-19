@@ -80,6 +80,10 @@ class ResultStore:
 
     @staticmethod
     def _verify_completed(path, completed):
+        if completed.get("schema") == 3:
+            from .datasets import verify_dataset
+            verify_dataset(path, completed)
+            return
         if completed.get("schema") not in (1, 2):
             raise IOError("Unsupported descriptor completion schema")
         if digest(completed["info"]) != path.stem:
@@ -133,9 +137,27 @@ class ResultStore:
                  info["stop"], info["start"]]).fetchone()
             if overlap:
                 raise ValueError("Overlapping results for the same calculation definition")
-            con.execute("INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                        [result_id, info["trajectory"], definition["representation"], definition["name"],
-                         canonical(definition), info["start"], info["stop"], relative, completed["rows"]])
+            con.execute("BEGIN TRANSACTION")
+            try:
+                con.execute("INSERT INTO descriptor_definitions VALUES (?, ?) ON CONFLICT DO NOTHING",
+                            [digest(definition), canonical(definition)])
+                con.execute("INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                            [result_id, info["trajectory"], definition["representation"], definition["name"],
+                             canonical(definition), info["start"], info["stop"], relative, completed["rows"]])
+                if completed.get("schema") == 3:
+                    from pathlib import Path
+                    for index, part in enumerate(completed["parts"]):
+                        child = (Path(relative).parent / part["file"]).as_posix()
+                        con.execute("INSERT INTO result_parts VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                                    [result_id, index, child, part["rows"]])
+                con.execute("COMMIT")
+            except BaseException:
+                con.execute("ROLLBACK")
+                raise
+
+    def dataset(self, trajectory, definition, *, layout):
+        from .datasets import DatasetWriter
+        return DatasetWriter(self, trajectory, definition, layout=layout)
 
     def recover(self):
         """Re-register completed files; incomplete files are never exposed."""

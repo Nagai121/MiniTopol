@@ -32,3 +32,9 @@ class DescriptorDefinition:
     @property
     def identity(self):
         return digest(self.as_dict())
+
+    def register(self, workspace):
+        with workspace.catalog() as con:
+            con.execute("INSERT INTO descriptor_definitions VALUES (?, ?) ON CONFLICT DO NOTHING",
+                        [self.identity, canonical(self.as_dict())])
+        return self.identity

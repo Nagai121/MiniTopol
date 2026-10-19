@@ -34,6 +34,11 @@ class Workspace:
                 definition VARCHAR NOT NULL, start_frame BIGINT NOT NULL,
                 stop_frame BIGINT NOT NULL, path VARCHAR UNIQUE NOT NULL,
                 rows BIGINT NOT NULL)""")
+            con.execute("""CREATE TABLE IF NOT EXISTS descriptor_definitions(
+                id VARCHAR PRIMARY KEY, definition VARCHAR NOT NULL)""")
+            con.execute("""CREATE TABLE IF NOT EXISTS result_parts(
+                result_id VARCHAR, part_index BIGINT, path VARCHAR UNIQUE NOT NULL,
+                rows BIGINT NOT NULL, PRIMARY KEY(result_id, part_index))""")
 
     @staticmethod
     def default_path():
@@ -67,7 +72,7 @@ class Workspace:
             return con.execute("SELECT id, frames, atoms FROM trajectories ORDER BY id").fetchall()
 
     def query_results(self, *, descriptor=None, trajectory=None, representation=None,
-                      columns=None, start=None, stop=None):
+                      definition_id=None, columns=None, start=None, stop=None):
         """Read published Parquet only; filtering/projection stays in DuckDB.
 
         Returns an Arrow table. Use narrow filters for large datasets.
@@ -78,11 +83,18 @@ class Workspace:
         for field, value in (("descriptor", descriptor), ("trajectory", trajectory),
                              ("representation", representation)):
             if value is not None:
-                clauses.append(f"{field} = ?")
+                clauses.append(f"r.{field} = ?")
                 args.append(value)
         with self.catalog() as con:
+            if definition_id is not None:
+                row = con.execute("SELECT definition FROM descriptor_definitions WHERE id=?", [definition_id]).fetchone()
+                if row is None:
+                    raise LookupError("Unknown descriptor definition")
+                clauses.append("r.definition = ?")
+                args.append(row[0])
             paths = [str(self.path / row[0]) for row in con.execute(
-                "SELECT path FROM results" + (" WHERE " + " AND ".join(clauses) if clauses else ""), args
+                "SELECT COALESCE(p.path,r.path) FROM results r LEFT JOIN result_parts p ON p.result_id=r.id" +
+                (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY r.id,p.part_index", args
             ).fetchall()]
             if not paths:
                 raise LookupError("No completed descriptor results match the request")
