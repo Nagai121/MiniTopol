@@ -101,4 +101,6 @@ def test_mcp_tools_registered():
     names = {tool.name for tool in mcp._tool_manager.list_tools()}
     assert {"atlas_metadata", "atlas_download", "atlas_downloads",
             "list_trajectories", "convert_trajectory",
-            "calculate_descriptors", "list_descriptor_results"} <= names
+            "calculate_descriptors", "list_descriptor_results",
+            "register_representation", "get_representation_definition",
+            "query_descriptor_rows"} <= names
