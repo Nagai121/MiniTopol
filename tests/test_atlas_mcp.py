@@ -104,3 +104,123 @@ def test_mcp_tools_registered():
             "calculate_descriptors", "list_descriptor_results",
             "register_representation", "get_representation_definition",
             "query_descriptor_rows"} <= names
+
+
+
+def test_zip_crc_corruption_rejected_before_publication(tmp_path):
+    import minitopol.atlas.client as atlas_module
+
+    payload = archive_bytes()
+    assert b"test-xtc" in payload
+    damaged = payload.replace(b"test-xtc", b"test-Xtc", 1)
+    workspace = Workspace(tmp_path)
+    client = AtlasClient(opener=lambda request, timeout: FakeResponse(damaged))
+    with pytest.raises(zipfile.BadZipFile):
+        client.download(workspace, "1k5n_A")
+    row = DownloadLedger(workspace).get("1k5n_A", "analysis")
+    assert row["status"] == "failed"
+    assert not (workspace.path / row["archive"]).exists()
+    assert not list((workspace.path / row["archive"]).parent.glob(".atlas-download-*"))
+
+
+def test_missing_xtc_does_not_publish_or_claim_success(tmp_path):
+    source = io.BytesIO()
+    with zipfile.ZipFile(source, "w") as zf:
+        zf.writestr("input.pdb", "ATOM")
+    workspace = Workspace(tmp_path)
+    client = AtlasClient(opener=lambda request, timeout: FakeResponse(source.getvalue()))
+    with pytest.raises(ValueError, match="XTC"):
+        client.download(workspace, "1k5n_A")
+    row = DownloadLedger(workspace).get("1k5n_A", "analysis")
+    assert row["status"] == "failed"
+    assert not (workspace.path / row["archive"]).exists()
+
+
+def test_extraction_failure_recorded_and_retried_offline(tmp_path, monkeypatch):
+    import minitopol.atlas.client as atlas_module
+
+    workspace = Workspace(tmp_path)
+    payload = archive_bytes()
+    downloaded = []
+    client = AtlasClient(opener=lambda request, timeout: (
+        downloaded.append(request.full_url) or FakeResponse(payload)
+    ))
+    real_extract = atlas_module._extract_inputs
+    with monkeypatch.context() as patch:
+        def fail_extract(*args):
+            raise OSError("disk temporarily unavailable")
+        patch.setattr(atlas_module, "_extract_inputs", fail_extract)
+        with pytest.raises(OSError, match="unavailable"):
+            client.download(workspace, "1k5n_A")
+    row = DownloadLedger(workspace).get("1k5n_A", "analysis")
+    assert row["status"] == "failed"
+    assert "unavailable" in row["error"]
+    assert row["sha256"]
+    assert (workspace.path / row["archive"]).is_file()
+
+    no_network = AtlasClient(opener=lambda request, timeout: pytest.fail("must reuse ZIP"))
+    result = no_network.download(workspace, "1k5n_A")
+    assert result["status"] == "skipped"
+    assert len(result["files"]) == 2
+    assert DownloadLedger(workspace).get("1k5n_A", "analysis")["status"] == "complete"
+    assert len(downloaded) == 1
+
+
+def test_crash_after_atomic_zip_publish_recovers_and_cleans_temps(tmp_path):
+    workspace = Workspace(tmp_path)
+    directory = workspace.trajectory_path("atlas-1k5n_A-analysis") / "source"
+    directory.mkdir(parents=True)
+    archive = directory / "1k5n_A_analysis.zip"
+    archive.write_bytes(archive_bytes())
+    abandoned = directory / ".atlas-download-aborted"
+    abandoned.write_bytes(b"partial")
+    DownloadLedger(workspace).put({
+        "dataset": "1k5n_A", "kind": "analysis",
+        "url": "https://www.dsimb.inserm.fr/ATLAS/api/ATLAS/analysis/1k5n_A",
+        "archive": archive.relative_to(workspace.path).as_posix(),
+        "downloaded_at": "", "bytes": "", "sha256": "",
+        "status": "downloading", "error": "",
+    })
+    no_network = AtlasClient(opener=lambda request, timeout: pytest.fail("must reuse ZIP"))
+    result = no_network.download(workspace, "1k5n_A", extract=False)
+    assert result["status"] == "skipped"
+    assert not abandoned.exists()
+    row = DownloadLedger(workspace).get("1k5n_A", "analysis")
+    assert row["status"] == "complete"
+    assert row["sha256"] == result["sha256"]
+    assert row["bytes"] == str(archive.stat().st_size)
+
+
+def test_reuse_hash_is_calculated_only_once(tmp_path, monkeypatch):
+    import minitopol.atlas.client as atlas_module
+
+    workspace = Workspace(tmp_path)
+    payload = archive_bytes()
+    AtlasClient(opener=lambda request, timeout: FakeResponse(payload)).download(
+        workspace, "1k5n_A", extract=False
+    )
+    previous = atlas_module._sha256
+    hashes = []
+    def tracked(path):
+        hashes.append(str(path))
+        return previous(path)
+    monkeypatch.setattr(atlas_module, "_sha256", tracked)
+    AtlasClient(opener=lambda request, timeout: pytest.fail("must reuse ZIP")).download(
+        workspace, "1k5n_A", extract=False
+    )
+    assert len(hashes) == 1
+
+
+def test_corruption_after_previous_success_is_not_silently_accepted(tmp_path):
+    workspace = Workspace(tmp_path)
+    AtlasClient(opener=lambda request, timeout: FakeResponse(archive_bytes())).download(
+        workspace, "1k5n_A", extract=False
+    )
+    row = DownloadLedger(workspace).get("1k5n_A", "analysis")
+    archive = workspace.path / row["archive"]
+    archive.write_bytes(b"corrupted file")
+    client = AtlasClient(opener=lambda request, timeout: pytest.fail("must not redownload"))
+    with pytest.raises(FileExistsError):
+        client.download(workspace, "1k5n_A")
+    assert archive.read_bytes() == b"corrupted file"
+    assert DownloadLedger(workspace).get("1k5n_A", "analysis")["status"] == "failed"
