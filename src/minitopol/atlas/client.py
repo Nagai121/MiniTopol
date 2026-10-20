@@ -104,6 +104,8 @@ def _verify_archive(archive: Path) -> None:
     may still be truncated or fail their CRC. Stream decompression in testzip
     keeps peak memory independent of archive size.
     """
+    if not zipfile.is_zipfile(archive):
+        raise ValueError("ATLAS response is not a ZIP archive")
     with zipfile.ZipFile(archive) as zf:
         members = [info for info in zf.infolist() if not info.is_dir()]
         if not members:
