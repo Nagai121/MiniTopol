@@ -25,19 +25,29 @@ Archive is stored under
 `BaseTraj_Workspace/trajectories/atlas-1k5n_A-analysis/source/1k5n_A_analysis.zip`.
 By default, only *.xtc, *.pdb, *.tpr, *.gro members are extracted beside
 the ZIP, without trusting ZIP member paths. Use `extract=False` to retain only
-the archive. An archive and a completed matching ledger row are reused;
-unverified existing files are never overwritten. The ledger is an atomic TSV
+the archive. An archive with a matching ledger entry is rechecked before reuse;
+untracked or checksum-mismatched existing files are never overwritten.
+A crash after publication of a valid ZIP but before the completion record can
+be recovered from the existing archive without another network transfer.
+Abandoned unpublished `.atlas-download-*` and `.atlas-extract-*` temporary
+files are cleaned up on the next locked acquisition. The ledger is an atomic TSV
 at `BaseTraj_Workspace/atlas/downloads.tsv` and is separate from DuckDB,
-which tracks only **converted** trajectories. If a network transfer fails,
-the ledger records "failed"; no partial ZIP is presented as complete.
+which tracks only **converted** trajectories. The ledger reports `complete` only when the requested operation succeeds,
+including extraction when requested. If download, archive validation, or
+extraction fails, the ledger reports `failed` and includes the error;
+verified ZIP archives are retained for safe extraction retry.
 
 ATLAS usually supplies PDB/TPR + XTC rather than a matching GRO + XTC.
 This feature does **not** fabricate a GRO or convert ATLAS PDB/TPR into GRO.
 Convert only after acquiring a verified, atom-order-compatible GRO/XTC pair.
 The existing Converter and scientific definitions remain unchanged.
 Full-sized live ATLAS download has not been verified in CI (offline mocks only).
-The ZIP itself is checked for a valid central directory, length when supplied,
-and its SHA-256 is recorded; this is not a provider-supplied checksum.
+The ZIP is checked for a valid central directory, the presence of an XTC,
+and CRC integrity of all members, in addition to HTTP Content-Length when
+provided. Its SHA-256 is recorded; this is not a provider-supplied checksum.
+Verification requires reading/decompressing the ZIP contents but operates with
+bounded buffer memory. Existing archives are not automatically overwritten
+if corruption is discovered.
 
 API references:
 - https://www.dsimb.inserm.fr/ATLAS/api/redoc
