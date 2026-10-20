@@ -1,0 +1,1 @@
+"""MCP adapter (optional extra: pip install minitopol[mcp])."""

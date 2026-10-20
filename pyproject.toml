@@ -10,10 +10,12 @@ requires-python = ">=3.11"
 dependencies = ["numpy>=2,<3", "scipy>=1.11", "MDAnalysis>=2.10,<3", "zarr>=3.1,<4", "pyarrow>=18", "duckdb>=1.2,<2", "filelock>=3.16"]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "mdtraj>=1.11,<2"]
+test = ["pytest>=8", "mdtraj>=1.11,<2", "mcp>=1.10,<2"]
+mcp = ["mcp>=1.10,<2"]
 
 [project.scripts]
 minitopol = "minitopol.cli:main"
+minitopol-mcp = "minitopol.mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
