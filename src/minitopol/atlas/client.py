@@ -173,6 +173,8 @@ class AtlasClient:
             directory.mkdir(parents=True, exist_ok=True)
             _remove_interrupted_temporaries(directory)
             old = ledger.get(dataset, kind)
+            if old is None and (archive.exists() or archive.is_symlink()):
+                raise FileExistsError("Untracked ATLAS archive will not be adopted or overwritten")
             if old and (old["url"] != url or old["archive"] != relative):
                 raise ValueError("ATLAS ledger entry does not match the requested archive")
             record = dict(old) if old else {
