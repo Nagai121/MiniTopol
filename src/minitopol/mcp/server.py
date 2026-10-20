@@ -111,6 +111,49 @@ def list_descriptor_results(trajectory: str | None = None,
     ]
 
 
+
+@mcp.tool()
+def register_representation(name: str, trajectory: str, version: str,
+                            groups: list[dict],
+                            descriptor_definitions: dict) -> str:
+    """Register an explicit C mapping and its predeclared descriptor definitions."""
+    workspace = Workspace()
+    return Registry(workspace).register(name, trajectory=trajectory,
+                                        version=version, groups=groups,
+                                        descriptor_definitions=descriptor_definitions)
+
+
+@mcp.tool()
+def get_representation_definition(name: str) -> dict:
+    """Get registered A/C definition; does not generate a C trajectory."""
+    workspace = Workspace()
+    return Registry(workspace).definition(name)
+
+
+@mcp.tool()
+def query_descriptor_rows(result_id: str, limit: int = 100) -> list[dict]:
+    """Return at most 1000 rows of an existing result without materializing all rows.
+
+    The result ID must come from list_descriptor_results. Source Parquet is
+    filtered with DuckDB LIMIT before materialization.
+    """
+    if type(limit) is not int or not 1 <= limit <= 1000:
+        raise ValueError("limit must be in 1..1000")
+    workspace = Workspace()
+    with workspace.catalog() as con:
+        parent = con.execute("SELECT path FROM results WHERE id = ?", [result_id]).fetchone()
+        if parent is None:
+            raise LookupError("Unknown completed descriptor result ID")
+        parts = con.execute(
+            "SELECT path FROM result_parts WHERE result_id = ? ORDER BY part_index",
+            [result_id],
+        ).fetchall()
+        files = [str(workspace.path / row[0]) for row in parts] if parts else [
+            str(workspace.path / parent[0])
+        ]
+        relation = con.read_parquet(files, union_by_name=True, hive_partitioning=False)
+        return relation.limit(limit).to_arrow_table().to_pylist()
+
 def main():
     mcp.run(transport="stdio")
 
