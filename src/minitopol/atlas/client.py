@@ -74,6 +74,8 @@ def _extract_inputs(archive: Path, target: Path) -> list[str]:
             raise ValueError("ATLAS archive contains no XTC trajectory")
         for name, info in members.items():
             dst = target / name
+            if dst.is_symlink():
+                raise FileExistsError(f"Extracted path must not be a symlink: {dst}")
             if dst.exists():
                 if dst.is_file() and dst.stat().st_size == info.file_size and _crc32(dst) == info.CRC:
                     extracted.append(str(dst))
@@ -93,6 +95,34 @@ def _extract_inputs(archive: Path, target: Path) -> list[str]:
                 Path(tmpname).unlink(missing_ok=True)
             extracted.append(str(dst))
     return extracted
+
+
+def _verify_archive(archive: Path) -> None:
+    """Validate the ZIP payload and required XTC before publishing it.
+
+    Checking the central directory alone is insufficient: the file contents
+    may still be truncated or fail their CRC. Stream decompression in testzip
+    keeps peak memory independent of archive size.
+    """
+    with zipfile.ZipFile(archive) as zf:
+        members = [info for info in zf.infolist() if not info.is_dir()]
+        if not members:
+            raise ValueError("ATLAS archive contains no files")
+        if not any(Path(info.filename.replace("\\", "/")).suffix.lower() == ".xtc"
+                   for info in members):
+            raise ValueError("ATLAS archive contains no XTC trajectory")
+        # Verify all members, not just the entries that will be extracted.
+        broken = zf.testzip()
+        if broken is not None:
+            raise zipfile.BadZipFile(f"CRC failure in ATLAS ZIP member: {broken}")
+
+
+def _remove_interrupted_temporaries(directory: Path) -> None:
+    """Remove only our unpublished temporary files, under the download lock."""
+    for prefix in (".atlas-download-", ".atlas-extract-"):
+        for entry in directory.glob(prefix + "*"):
+            if entry.is_file() or entry.is_symlink():
+                entry.unlink()
 
 
 class AtlasClient:
@@ -123,81 +153,96 @@ class AtlasClient:
 
     def download(self, workspace, dataset: str, kind: str = "analysis", *,
                  extract: bool = True) -> dict:
-        """Fetch into trajectories/atlas-<dataset>-<kind>/source, never overwriting.
+        """Download and verify an ATLAS ZIP, optionally extracting input files.
 
-        The ledger records downloaded archives; extraction is independently
-        repeatable. Large archives are streamed to a temporary file, checked for
-        complete size (where provided) and valid ZIP directory, then published.
+        "complete" in the TSV means the requested download/extraction finished.
+        Failures after ZIP publication preserve the verified archive, allowing
+        retry without a second network transfer. No unverified user file is
+        overwritten, and abandoned temporary files are removed on retry.
         """
         dataset, kind = _dataset_id(dataset), _kind(kind)
         url = f"{BASE_URL}/ATLAS/{kind}/{dataset}"
         trajectory_id = f"atlas-{dataset}-{kind}"
         directory = workspace.trajectory_path(trajectory_id) / "source"
         archive = directory / f"{dataset}_{kind}.zip"
+        relative = archive.relative_to(workspace.path).as_posix()
         ledger = DownloadLedger(workspace)
         with workspace.lock(f"atlas-download-{trajectory_id}"):
             directory.mkdir(parents=True, exist_ok=True)
+            _remove_interrupted_temporaries(directory)
             old = ledger.get(dataset, kind)
-            if archive.exists():
-                checksum = _sha256(archive)
-                if not (archive.is_file() and zipfile.is_zipfile(archive)
-                        and old and old["status"] == "complete"
-                        and old["sha256"] == checksum
-                        and int(old["bytes"]) == archive.stat().st_size):
-                    raise FileExistsError("Existing ATLAS archive is unverified; will not overwrite it")
-                status = "skipped"
-            else:
-                record = {
-                    "dataset": dataset, "kind": kind, "url": url,
-                    "archive": archive.relative_to(workspace.path).as_posix(),
-                    "downloaded_at": "", "bytes": "", "sha256": "",
-                    "status": "downloading", "error": "",
-                }
-                ledger.put(record)
-                tmpname = None
-                try:
+            if old and (old["url"] != url or old["archive"] != relative):
+                raise ValueError("ATLAS ledger entry does not match the requested archive")
+            record = dict(old) if old else {
+                "dataset": dataset, "kind": kind, "url": url,
+                "archive": relative, "downloaded_at": "", "bytes": "",
+                "sha256": "", "status": "downloading", "error": "",
+            }
+            tmpname = None
+            fresh = False
+            try:
+                if archive.exists() or archive.is_symlink():
+                    if not archive.is_file() or archive.is_symlink() or not old:
+                        raise FileExistsError("Untracked or non-regular ATLAS archive will not be overwritten")
+                    size = archive.stat().st_size
+                    checksum = _sha256(archive)
+                    if (old["sha256"] and old["sha256"] != checksum) or (
+                        old["bytes"] and int(old["bytes"]) != size
+                    ):
+                        raise FileExistsError("Existing ATLAS archive differs from its recorded checksum/size")
+                    # Includes a one-time revalidation path for archives made by
+                    # older MiniTopol versions that did not test member CRCs.
+                    _verify_archive(archive)
+                    if not record["downloaded_at"]:
+                        record["downloaded_at"] = datetime.now(timezone.utc).isoformat()
+                    record.update(bytes=str(size), sha256=checksum)
+                else:
+                    record.update(status="downloading", error="")
+                    ledger.put(record)
                     fd, tmpname = tempfile.mkstemp(prefix=".atlas-download-", dir=directory)
-                    h = hashlib.sha256()
+                    checksum_state = hashlib.sha256()
                     size = 0
-                    with os.fdopen(fd, "wb") as output, self._request(url, accept="application/zip") as response:
+                    with os.fdopen(fd, "wb") as output, self._request(
+                        url, accept="application/zip"
+                    ) as response:
                         length = response.headers.get("Content-Length")
                         expected = int(length) if length is not None else None
                         for block in iter(lambda: response.read(1024 * 1024), b""):
                             output.write(block)
-                            h.update(block)
+                            checksum_state.update(block)
                             size += len(block)
                         output.flush()
                         os.fsync(output.fileno())
                     if expected is not None and size != expected:
                         raise IOError(f"Incomplete ATLAS download: expected {expected} bytes, got {size}")
-                    if not zipfile.is_zipfile(tmpname):
-                        raise ValueError("ATLAS response is not a ZIP archive")
-                    with zipfile.ZipFile(tmpname) as zf:
-                        if not zf.infolist():
-                            raise ValueError("ATLAS returned an empty ZIP archive")
+                    _verify_archive(Path(tmpname))
                     os.replace(tmpname, archive)
+                    tmpname = None
+                    checksum = checksum_state.hexdigest()
                     record.update(
                         downloaded_at=datetime.now(timezone.utc).isoformat(),
-                        bytes=str(size), sha256=h.hexdigest(), status="complete",
+                        bytes=str(size), sha256=checksum,
                     )
+                    fresh = True
+                # Only mark complete after requested extraction has succeeded.
+                extracted = _extract_inputs(archive, directory) if extract else []
+                record.update(status="complete", error="")
+                ledger.put(record)
+            except Exception as exc:
+                record.update(status="failed", error=f"{type(exc).__name__}: {exc}"[:500])
+                try:
                     ledger.put(record)
-                    status = "downloaded"
-                except Exception as exc:
-                    # The ZIP may already have been atomically published if the
-                    # ledger write failed. Preserve it; never silently overwrite.
-                    record.update(status="failed", error=str(exc)[:500])
-                    try:
-                        ledger.put(record)
-                    except Exception:
-                        pass
-                    raise
-                finally:
-                    if tmpname is not None:
-                        Path(tmpname).unlink(missing_ok=True)
-            extracted = _extract_inputs(archive, directory) if extract else []
+                except Exception:
+                    # Preserve the original error and any already-published ZIP.
+                    pass
+                raise
+            finally:
+                if tmpname is not None:
+                    Path(tmpname).unlink(missing_ok=True)
             return {
-                "dataset": dataset, "kind": kind, "status": status,
+                "dataset": dataset, "kind": kind,
+                "status": "downloaded" if fresh else "skipped",
                 "trajectory_id": trajectory_id,
-                "archive": str(archive), "sha256": _sha256(archive),
+                "archive": str(archive), "sha256": checksum,
                 "files": extracted,
             }
