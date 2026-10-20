@@ -75,3 +75,7 @@ CLI、注釈JSON、出力列、中断再開と計算資源については [docs/
 仕様、再開方法、実装済みの範囲と制約は [docs/schema.md](docs/schema.md) に記載しています。
 このリポジトリには実教師データを含めていません。テストは一時ディレクトリ内でGRO・XTCを生成します。
 数百GB規模の実教師データでの長時間運用は未検証です。
+
+## ATLASとMCP
+
+ATLASからのメタデータ取得・ZIPダウンロードと簡易TSV台帳、ローカルstdio MCPサーバーを追加しました。保存先は既存の`trajectories/`配下です。ATLASのPDB/TPR＋XTCをGRO＋XTCへ自動変換はしません。詳細は[ATLAS・MCPの使い方](docs/atlas-mcp.md)を参照してください。
