@@ -9,7 +9,7 @@ for permitted downstream reuse and attribution.
 
 ## Python acquisition and tiny TSV ledger
 
-\`\`\`python
+```python
 from minitopol import Workspace
 from minitopol.atlas import AtlasClient, DownloadLedger
 
@@ -19,15 +19,15 @@ print(client.metadata("1k5n_A"))
 result = client.download(workspace, "1k5n_A", "analysis")
 print(result["archive"], result["files"])
 print(DownloadLedger(workspace).list())
-\`\`\`
+```
 
 Archive is stored under
-\`BaseTraj_Workspace/trajectories/atlas-1k5n_A-analysis/source/1k5n_A_analysis.zip\`.
+`BaseTraj_Workspace/trajectories/atlas-1k5n_A-analysis/source/1k5n_A_analysis.zip`.
 By default, only *.xtc, *.pdb, *.tpr, *.gro members are extracted beside
-the ZIP, without trusting ZIP member paths. Use \`extract=False\` to retain only
+the ZIP, without trusting ZIP member paths. Use `extract=False` to retain only
 the archive. An archive and a completed matching ledger row are reused;
 unverified existing files are never overwritten. The ledger is an atomic TSV
-at \`BaseTraj_Workspace/atlas/downloads.tsv\` and is separate from DuckDB,
+at `BaseTraj_Workspace/atlas/downloads.tsv` and is separate from DuckDB,
 which tracks only **converted** trajectories. If a network transfer fails,
 the ledger records "failed"; no partial ZIP is presented as complete.
 
@@ -48,13 +48,13 @@ API references:
 
 Install the optional dependency and start the **local stdio** server:
 
-\`\`\`bash
+```bash
 python -m pip install -e ".[mcp]"
 minitopol-mcp
-\`\`\`
+```
 
-As for MiniTopol itself, \`MINITOPOL_WORKSPACE\` chooses the workspace.
-Configure an MCP client to launch the installed \`minitopol-mcp\` command.
+As for MiniTopol itself, `MINITOPOL_WORKSPACE` chooses the workspace.
+Configure an MCP client to launch the installed `minitopol-mcp` command.
 The server communicates via stdout JSON-RPC; do not print ordinary
 diagnostics on stdout. No remote HTTP MCP listener is started.
 
