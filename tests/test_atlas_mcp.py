@@ -71,6 +71,10 @@ def test_existing_untracked_or_modified_archive_not_overwritten(tmp_path):
     with pytest.raises(FileExistsError):
         client.download(workspace, "1k5n_A", "total")
     assert original.read_bytes() == b"user data"
+    # A second call must not treat the former error as proof of provenance.
+    with pytest.raises(FileExistsError):
+        client.download(workspace, "1k5n_A", "total")
+    assert DownloadLedger(workspace).get("1k5n_A", "total") is None
 
 
 def test_zip_path_traversal_is_never_extracted(tmp_path):
