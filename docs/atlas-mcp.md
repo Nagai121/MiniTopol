@@ -60,7 +60,8 @@ diagnostics on stdout. No remote HTTP MCP listener is started.
 
 Available tools include ATLAS metadata/download/ledger, converted trajectory
 and representation listing, GRO+XTC conversion, chain annotation, A
-descriptor calculation, and completed descriptor result metadata listing.
+descriptor calculation, C representation registration/definition reading, completed descriptor result
+metadata listing, and limited result row retrieval (at most 1000 rows per call).
 MCP calls use existing Python APIs; scientific calculations are not
 reimplemented. Descriptor calculations are **synchronous** and can exceed
 an MCP client's timeout; no job scheduler is claimed or added. Large frames
