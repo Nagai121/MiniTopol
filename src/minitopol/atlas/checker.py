@@ -1,19 +1,20 @@
-"""ATLAS input inspection: one validated file and atom correspondence plan per replica.
+"""Validate extracted ATLAS replica inputs and their provenance before conversion.
 
-XTC has no atom identities. Atom count and an ATLAS-named topology establish
-a supported pairing, not an independent proof of atom order inside an XTC.
-Never silently choose between ambiguous file or topology matches.
+XTC contains only ordered coordinates, not atom identities. Thus consistency
+with an ATLAS-provided topology is established by the provider pairing contract,
+file identity and atom count, not by inventing atom identities from positions.
 """
 from __future__ import annotations
 
 from pathlib import Path
 import re
+import zipfile
 
 import MDAnalysis as mda
-import numpy as np
 from MDAnalysis.coordinates.XTC import XTCReader
 
-from .client import _dataset_id, _kind
+from .client import _dataset_id, _kind, _sha256, _crc32
+from .ledger import DownloadLedger
 
 _REPLICA = re.compile(r"(?:^|[_.-])R([1-9][0-9]*)(?=$|[_.-])", re.IGNORECASE)
 _SUFFIXES = {".gro", ".pdb", ".tpr", ".xtc"}
@@ -35,22 +36,33 @@ def _choose(files: list[Path], replica: str, suffix: str) -> Path | None:
     return matching[0] if matching else None
 
 
-def _labels(path: Path) -> tuple[tuple[str, str], ...]:
+def _labels(path: Path) -> tuple[tuple[str, str, int], ...]:
+    """Label residue occurrences independent of PDB/TPR residue numbering.
+
+    Atom names and residue names alone cannot distinguish repeated residues.
+    Ordinal by residue *name* makes repeated copies distinguishable without
+    trusting PDB/TPR absolute residue ids, which need not agree.
+    """
     universe = mda.Universe(str(path))
     try:
-        return tuple((str(res).upper(), str(atom).upper())
-                     for res, atom in zip(universe.atoms.resnames, universe.atoms.names))
+        ordinal = {}
+        seen = {}
+        result = []
+        for atom in universe.atoms:
+            residue_index = int(atom.resindex)
+            residue = str(atom.resname).upper()
+            if residue_index not in ordinal:
+                seen[residue] = seen.get(residue, 0) + 1
+                ordinal[residue_index] = seen[residue]
+            result.append((residue, str(atom.name).upper(), ordinal[residue_index]))
+        return tuple(result)
     finally:
         if getattr(universe, "trajectory", None) is not None:
             universe.trajectory.close()
 
 
 def unique_subsequence(source: tuple, target: tuple) -> list[int]:
-    """Map each source atom to an atom in target; require one ordered solution.
-
-    Forward/backward greedy alignments agree exactly iff the monotone
-    subsequence correspondence is unique. This is linear even with solvent.
-    """
+    """Require a unique, order-preserving source-to-TPR atom mapping."""
     if not source:
         raise ValueError("Empty atom topology")
     forward, position = [], 0
@@ -74,13 +86,44 @@ def unique_subsequence(source: tuple, target: tuple) -> list[int]:
     return forward
 
 
-def check_atlas(workspace, dataset: str, kind: str = "analysis") -> list[dict]:
-    """Inspect extracted ATLAS inputs; return per-replica plans shared by both consumers.
+def _verify_acquisition(workspace, dataset: str, kind: str, files: list[Path]) -> str:
+    """Recheck downloaded archive/ledger and all extracted inputs, if tracked.
 
-    An XTC is coupled to a topology only by unambiguous ATLAS replica naming
-    and equal atom counts. TPR matching additionally checks ordered atom labels.
-    A failed optional TPR check never invalidates an otherwise usable A input.
+    Manually staged inputs without a ledger remain supported; they are marked
+    'manual' and cannot be mistaken for provider-verified downloads.
     """
+    record = DownloadLedger(workspace).get(dataset, kind)
+    directory = workspace.trajectory_path(f"atlas-{dataset}-{kind}") / "source"
+    archive = directory / f"{dataset}_{kind}.zip"
+    if record is None:
+        if archive.exists():
+            raise ValueError("Untracked ATLAS archive cannot authenticate extracted inputs")
+        return "manual"
+    if (record["status"] != "complete"
+            or record["archive"] != archive.relative_to(workspace.path).as_posix()
+            or not archive.is_file() or archive.is_symlink()
+            or int(record["bytes"]) != archive.stat().st_size
+            or record["sha256"] != _sha256(archive)):
+        raise ValueError("ATLAS acquisition ledger/archive mismatch")
+    with zipfile.ZipFile(archive) as zf:
+        entries = {}
+        for info in zf.infolist():
+            if info.is_dir() or Path(info.filename.replace("\\", "/")).suffix.lower() not in _SUFFIXES:
+                continue
+            name = Path(info.filename.replace("\\", "/")).name
+            if name in entries:
+                raise ValueError("Ambiguous input member names in ATLAS archive")
+            entries[name] = info
+        for path in files:
+            info = entries.get(path.name)
+            if (info is None or not path.is_file() or path.is_symlink()
+                    or path.stat().st_size != info.file_size or _crc32(path) != info.CRC):
+                raise ValueError(f"Extracted ATLAS input differs from verified archive: {path.name}")
+    return "verified_archive"
+
+
+def check_atlas(workspace, dataset: str, kind: str = "analysis") -> list[dict]:
+    """Return checker-validated independent plans or explicit per-replica errors."""
     dataset, kind = _dataset_id(dataset), _kind(kind)
     source = workspace.trajectory_path(f"atlas-{dataset}-{kind}") / "source"
     if not source.is_dir():
@@ -96,34 +139,44 @@ def check_atlas(workspace, dataset: str, kind: str = "analysis") -> list[dict]:
         raise ValueError("Multiple XTC files with the same or missing replica identifier")
     if len(trajectories) > 1 and None in tagged:
         raise ValueError("Multiple XTC files require explicit replica identifiers")
+    provenance = _verify_acquisition(workspace, dataset, kind, files)
     plans = []
     for xtc in trajectories:
         replica = _replica(xtc) or "R1"
-        # Prefer GRO when both are supplied, without changing GRO converter behavior.
-        topology = (_choose(files, replica, ".gro")
-                    or _choose(files, replica, ".pdb"))
-        if topology is None:
-            raise ValueError(f"No GRO or PDB topology for {replica}")
-        labels = _labels(topology)
-        with XTCReader(str(xtc)) as reader:
-            atom_count = reader.n_atoms
-        if atom_count != len(labels):
-            raise ValueError(f"{replica}: {xtc.name} has {atom_count} atoms; "
-                             f"{topology.name} has {len(labels)}")
-        tpr = _choose(files, replica, ".tpr")
-        mapping, bond_error = None, None
-        if tpr is not None:
-            try:
-                mapping = unique_subsequence(labels, _labels(tpr))
-            except Exception as error:
-                bond_error = f"{type(error).__name__}: {error}"
-        plans.append({"dataset": dataset, "kind": kind, "replica": replica,
-                      "topology": str(topology), "xtc": str(xtc),
-                      "tpr": str(tpr) if tpr else None,
-                      "source_to_tpr": mapping, "bond_error": bond_error,
-                      "atoms": atom_count})
-    # One TPR per replica or an unlabelled shared TPR is valid.
-    # Orphan replica-specific TPRs indicate a misassembled input archive.
+        try:
+            with XTCReader(str(xtc)) as reader:
+                atom_count = reader.n_atoms
+            candidates = [_choose(files, replica, suffix) for suffix in (".gro", ".pdb")]
+            valid = []
+            for topology in (p for p in candidates if p is not None):
+                try:
+                    labels = _labels(topology)
+                except Exception:
+                    continue
+                if len(labels) == atom_count:
+                    valid.append((topology, labels))
+            if not valid:
+                raise ValueError(f"No GRO/PDB topology has {atom_count} atoms for {replica}")
+            # A matching GRO and PDB must describe the same atom order.
+            if len(valid) == 2 and valid[0][1] != valid[1][1]:
+                raise ValueError("Conflicting GRO/PDB atom orders for the same replica")
+            topology, labels = valid[0]
+            tpr = _choose(files, replica, ".tpr")
+            mapping, bond_error = None, None
+            if tpr is not None:
+                try:
+                    mapping = unique_subsequence(labels, _labels(tpr))
+                except Exception as error:
+                    bond_error = f"{type(error).__name__}: {error}"
+            plans.append({"dataset": dataset, "kind": kind, "replica": replica,
+                          "topology": str(topology), "xtc": str(xtc),
+                          "tpr": str(tpr) if tpr else None,
+                          "source_to_tpr": mapping, "bond_error": bond_error,
+                          "atoms": atom_count, "provenance": provenance})
+        except Exception as error:
+            plans.append({"dataset": dataset, "kind": kind, "replica": replica,
+                          "error": f"{type(error).__name__}: {error}",
+                          "provenance": provenance})
     replicas = {p["replica"] for p in plans}
     orphans = [p.name for p in files if p.suffix.lower() == ".tpr"
                and _replica(p) is not None and _replica(p) not in replicas]

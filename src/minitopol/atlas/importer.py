@@ -11,10 +11,20 @@ def import_atlas(workspace, dataset: str, kind: str = "analysis", *,
     plans = check_atlas(workspace, dataset, kind)
     results = []
     for plan in plans:
+        if "error" in plan:
+            results.append({"replica": plan["replica"], "A": "failed",
+                            "bonds": "unavailable", "reason": plan["error"]})
+            continue
         identifier = f'atlas-{plan["dataset"]}-{plan["kind"]}-{plan["replica"]}'
-        tid = convert(workspace, plan["topology"], plan["xtc"],
-                      solvent_resnames=solvent_resnames, trajectory_id=identifier,
-                      chunk_frames=chunk_frames)
+        try:
+            tid = convert(workspace, plan["topology"], plan["xtc"],
+                          solvent_resnames=solvent_resnames, trajectory_id=identifier,
+                          chunk_frames=chunk_frames)
+        except Exception as error:
+            results.append({"replica": plan["replica"], "A": "failed",
+                            "bonds": "unavailable",
+                            "reason": f"{type(error).__name__}: {error}"})
+            continue
         result = {"replica": plan["replica"], "trajectory_id": tid, "A": "complete"}
         if plan["tpr"] is None:
             result["bonds"] = "unavailable"
@@ -29,6 +39,7 @@ def import_atlas(workspace, dataset: str, kind: str = "analysis", *,
                 result["bonds"] = "complete"
         results.append(result)
     return {"dataset": plans[0]["dataset"], "kind": plans[0]["kind"],
-            "status": "complete" if all(r["bonds"] in ("complete", "unavailable")
+            "status": "complete" if all(r["A"] == "complete"
+                                        and r["bonds"] in ("complete", "unavailable")
                                         for r in results) else "partial",
             "replicas": results}

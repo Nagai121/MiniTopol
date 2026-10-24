@@ -2,6 +2,7 @@
 
 import hashlib
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from ..registry import Registry
@@ -48,6 +49,12 @@ class ResultStore:
                 raise ValueError("Frame values must be non-null integers")
             if len(frame) and (min(frame) < start or max(frame) >= stop):
                 raise ValueError("Frame rows lie outside the published interval")
+        # Match DatasetWriter: invalid floating results must not be published.
+        for field in table.schema:
+            if pa.types.is_floating(field.type):
+                finite = pc.fill_null(pc.is_finite(table[field.name]), True)
+                if pc.all(finite).as_py() is False:
+                    raise ValueError("Non-finite descriptor output must be null with a reason")
         payload_hash = _payload_hash(table)
         info = {"trajectory": trajectory, "source_identity": manifest["identity"],
                 "definition": definition.as_dict(), "start": start, "stop": stop}

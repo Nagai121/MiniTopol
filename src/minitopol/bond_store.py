@@ -57,8 +57,6 @@ class BondStore:
         edge_list = sorted(set((int(a), int(b)) for a, b in edges))
         if any(a < 0 or a >= b or b >= manifest["atoms"] for a, b in edge_list):
             raise ValueError("Bond edges must be distinct ordered A point pairs")
-        if not edge_list and manifest["atoms"] > 1:
-            raise ValueError("TPR supplied no bonds connecting selected heavy atoms")
         data, marker = self._paths(trajectory)
         record = {"schema": 1, "a_identity": manifest["identity"],
                   "tpr_sha256": tpr_sha256, "mapping_sha256": mapping_sha256,

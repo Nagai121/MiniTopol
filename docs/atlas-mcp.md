@@ -42,14 +42,23 @@ After download and extraction, use the separate checker/import step:
 `python -m minitopol atlas-check 1k5n_A --kind analysis` and
 `python -m minitopol atlas-import 1k5n_A --kind analysis`.
 The checker identifies XTC replicas, selects unambiguous GRO/PDB input topologies,
-checks XTC atom counts and validates a unique ordered TPR atom mapping.
+checks XTC atom counts, identifies repeated residue occurrences in the
+topology, and validates a unique ordered TPR atom mapping. When an ATLAS
+download ledger entry exists, the checker also verifies its ZIP hash and all
+extracted input CRCs. Manually staged inputs are marked `manual` and do not
+carry a provider-verified provenance claim.
 Each replica becomes a separate A trajectory; a usable TPR also produces a
 separate static heavy-atom covalent graph. TPR errors are reported separately
 and never destroy an already completed A. Missing TPR permits A-only import.
 No dummy GRO, PDB-derived bonds or distance-based bond inference is used.
+The TPR bond reader excludes nonchemical harmonic restraints, nonconnecting
+constraints and tabulated nonconnections; it retains only GROMACS
+chemical-connection interaction types. Zero-edge graphs are valid.
 XTC itself has no atom identifiers: matching counts plus unambiguous ATLAS
 file naming do not independently prove the actual atom order inside XTC.
 Unverifiable pairings and ambiguous TPR mappings must not be silently guessed.
+If one replica fails validation or A conversion, other independently validated
+replicas can still complete; failures are reported by replica.
 The original GRO + XTC converter and the ten scientific definitions remain unchanged.
 Full-sized live ATLAS download has not been verified in CI (offline mocks only).
 The ZIP is checked for a valid central directory, the presence of an XTC,
