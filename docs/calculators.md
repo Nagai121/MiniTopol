@@ -5,6 +5,11 @@
 
 ## 実行
 
+ネイティブ計算と座標の可逆圧縮を利用する場合は `pip install '.[mcp,acceleration,lossless]'` でインストールします。
+`acceleration` はNumba、`lossless` はPCodecと対応するZarr/numcodecsを導入します。PCodecで保存した座標の読み出しには、読み出し側にも対応する依存ライブラリが必要です。
+SASAの960球面点・原子半径・プローブ半径・遮蔽判定、全フレーム・全ラグの科学的定義は変わりません。主鎖角の中間計算はfloat64で行います。保存座標に由来する精度限界は変わりません。
+`memory_mb` は作業配列の予算で、Python・ライブラリ・スレッドを含むプロセス全体のRSS上限ではありません。
+
 ```bash
 python -m minitopol --workspace /data/MiniTopol convert teacher.gro teacher.xtc --solvent SOL
 python -m minitopol --workspace /data/MiniTopol annotate TRAJECTORY_ID annotations.json

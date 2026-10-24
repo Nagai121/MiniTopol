@@ -27,6 +27,20 @@ def minimum_residue_distance(ctx, xyz, a, b, box):
 
 
 def calculate(ctx, writer):
+    if ctx.mode == 'nonperiodic':
+        try:
+            from .spatial_contacts import calculate as spatial, UseOriginal
+        except ImportError:
+            pass
+        else:
+            try:
+                return spatial(ctx, writer)
+            except UseOriginal:
+                pass
+    return _calculate_original(ctx, writer)
+
+
+def _calculate_original(ctx, writer):
     from .context import PROTEIN_NAMES
     protein = {r for r, points in ctx.res_atoms.items() if ctx.atoms["residue_name"][points[0]] in PROTEIN_NAMES}
     protein.update(ctx.atoms["residue_index"][i] for i in (ctx.annotation["alpha_carbons"] or []))

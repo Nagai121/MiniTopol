@@ -72,10 +72,16 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
     with ctx.cache_lock:
         for name, definition in definitions.items():
             try:
-                with ResultStore(workspace).dataset(trajectory, definition, layout=ctx.layout) as writer:
+                output_layout = ({**ctx.layout, "output_partitioning": "compact-v1"}
+                                 if name in {"sasa", "ramachandran", "secondary_structure", "contacts", "time_correlation"}
+                                 else ctx.layout)
+                if name == "ramachandran": output_layout = {**output_layout, "angle_intermediates": "float64-v1"}
+                with ResultStore(workspace).dataset(trajectory, definition, layout=output_layout) as writer:
                     if not writer.complete:
                         module = import_module("." + CALCULATORS[name][0], __package__)
-                        module.calculate(ctx, writer)
+
+                        from .compact_output import calculate
+                        calculate(name, module, ctx, writer)
                 report["results"][name] = {"status": "complete", "definition_id": definition.identity,
                                           "result_id": writer.result_id, "rows": writer.state["rows"],
                                           "undefined_values": sum(p.get("undefined_values", 0) for p in writer.state["parts"])}

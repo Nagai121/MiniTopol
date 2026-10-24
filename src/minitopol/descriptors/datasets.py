@@ -75,6 +75,7 @@ class DatasetWriter:
         self.layout = layout
         self.lock = self.workspace.lock("result-" + digest([trajectory, definition.identity]))
         self.complete = False
+        self.journal = False
 
     def __enter__(self):
         self.lock.acquire()
@@ -88,7 +89,8 @@ class DatasetWriter:
                 self.complete = True
                 self.state = completed
             elif self.progress.exists():
-                self.state = read_json(self.progress)
+                from .progress_journal import load
+                self.state, self.journal = load(self.progress)
                 if self.state["info"] != self.info or self.state["layout"] != self.layout:
                     raise ValueError("Resume the unfinished dataset with its original processing layout")
                 for index, part in enumerate(self.state["parts"]):
@@ -98,7 +100,9 @@ class DatasetWriter:
             else:
                 self.directory.mkdir(parents=True, exist_ok=True)
                 self.state = {"schema": 3, "info": self.info, "layout": self.layout, "parts": []}
-                atomic_json(self.progress, self.state)
+                from .progress_journal import start
+                start(self.progress, self.state)
+                self.journal = True
             self.by_key = {part["key"]: part for part in self.state["parts"]}
             return self
         except BaseException:
@@ -125,7 +129,11 @@ class DatasetWriter:
         part = {"key": key, "file": part_file, "rows": len(table),
                 "sha256": fingerprint(child)["sha256"], "payload_hash": checksum, "undefined_values": undefined}
         self.state["parts"].append(part)
-        atomic_json(self.progress, self.state)
+        if self.journal:
+            from .progress_journal import append
+            append(self.progress, len(self.state['parts'])-1, part)
+        else:
+            atomic_json(self.progress, self.state)
         self.by_key[key] = part
 
     def __exit__(self, kind, error, traceback):

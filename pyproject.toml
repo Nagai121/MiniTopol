@@ -12,6 +12,8 @@ dependencies = ["numpy>=2,<3", "scipy>=1.11", "MDAnalysis>=2.10,<3", "zarr>=3.1,
 [project.optional-dependencies]
 test = ["pytest>=8", "mdtraj>=1.11,<2", "mcp>=1.10,<2"]
 mcp = ["mcp>=1.10,<2"]
+acceleration = ["numba>=0.68,<0.69"]
+lossless = ["pcodec==1.0.4", "zarr>=3.4.1,<4", "numcodecs>=0.17,<0.18"]
 
 [project.scripts]
 minitopol = "minitopol.cli:main"

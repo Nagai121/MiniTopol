@@ -5,13 +5,36 @@ from scipy.signal import fftconvolve
 import zarr
 
 
+class _MemoryArray(np.ndarray):
+    @property
+    def oindex(self):
+        return self
+
+
 def atom_correlation(ctx, point, mean, directory):
-    """Return on-disk raw lag dot sums and squared-displacement prefix sums.
+    """Return raw lag dot sums and squared-displacement prefix sums.
 
     Different time tiles are cross-correlated as well as each tile with itself.
+    One-tile work uses budgeted RAM scratch; longer work uses on-disk tiles.
     Only two tiles and their FFT workspaces are in RAM. Neither long-lag pairs
     nor pairs across tile boundaries are dropped.
     """
+    if ctx.fft_block >= ctx.n:
+        # The original layout already budgets 512 bytes per time point.
+        # Preserve its arithmetic, retaining this one-atom scratch in RAM.
+        points = max(1, min(32, ctx.budget // (ctx.n * 3 * 8 * 8)))
+        start = point // points * points
+        stop = min(start + points, ctx.m)
+        saved = getattr(ctx, '_correlation_block', None)
+        if saved is None or saved[0:2] != (start, stop):
+            saved = (start, stop, ctx.read_aligned(0, ctx.n, np.arange(start,stop)))
+            ctx._correlation_block = saved
+        a = saved[2][:, point-start] - mean
+        prefix = np.empty(ctx.n + 1).view(_MemoryArray)
+        prefix[0] = 0
+        prefix[1:] = np.cumsum(np.einsum("ij,ij->i", a, a))
+        convolution = fftconvolve(a, a[::-1], mode="full", axes=0).sum(axis=1)
+        return (convolution[ctx.n-1:] + 0).view(_MemoryArray), prefix
     group = zarr.open_group(str(directory), mode="w", zarr_format=3)
     width = ctx.fft_block
     dots = group.create_array("dots", shape=(ctx.n,), chunks=(width,), dtype="f8", fill_value=0)

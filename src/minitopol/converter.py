@@ -74,7 +74,19 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                 if name not in group:
                     if manifest["committed_frames"]:
                         raise IOError("Committed trajectory array is missing")
-                    group.create_array(name, shape=shape, chunks=chunks, dtype=dtype)
+                    if name == "positions":
+                        try:
+                            import pcodec
+                        except ImportError:
+                            group.create_array(name, shape=shape, chunks=chunks, dtype=dtype)
+                        else:
+                            from zarr.codecs import TransposeCodec
+                            from zarr.codecs.numcodecs import PCodec
+                            group.create_array(name, shape=shape, chunks=chunks, dtype=dtype,
+                                               filters=[TransposeCodec(order=(1, 2, 0))],
+                                               serializer=PCodec(level=12, delta_spec="try_consecutive", delta_encoding_order=1), compressors=[])
+                    else:
+                        group.create_array(name, shape=shape, chunks=chunks, dtype=dtype)
                 elif group[name].shape != shape or group[name].chunks != chunks:
                     raise IOError("Trajectory array schema does not match manifest")
             group.attrs.update({"representation": "A", "coordinate_unit": "angstrom", "time_unit": "ps"})

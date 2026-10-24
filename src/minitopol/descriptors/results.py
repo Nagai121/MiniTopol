@@ -20,7 +20,7 @@ def with_result_metadata(table, info):
     definition = info["definition"]
     for name, value in (("trajectory", info["trajectory"]), ("representation", definition["representation"]),
                         ("descriptor", definition["name"]), ("definition_id", digest(definition))):
-        table = table.append_column(name, pa.array([value] * len(table), type=pa.string()))
+        table = table.append_column(name, pa.repeat(pa.scalar(value, type=pa.string()), len(table)))
     return table.replace_schema_metadata({b"minitopol": canonical(info).encode()})
 
 
@@ -152,10 +152,23 @@ class ResultStore:
                              canonical(definition), info["start"], info["stop"], relative, completed["rows"]])
                 if completed.get("schema") == 3:
                     from pathlib import Path
-                    for index, part in enumerate(completed["parts"]):
-                        child = (Path(relative).parent / part["file"]).as_posix()
-                        con.execute("INSERT INTO result_parts VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                                    [result_id, index, child, part["rows"]])
+                    # Bound temporary memory and retain the single publication
+                    # transaction, ordering, keys and conflict policy.
+                    for start in range(0, len(completed["parts"]), 4096):
+                        batch = completed["parts"][start:start + 4096]
+                        table = pa.table({
+                            "result_id": pa.array([result_id] * len(batch), type=pa.string()),
+                            "part_index": pa.array(range(start, start + len(batch)), type=pa.int64()),
+                            "path": pa.array([(Path(relative).parent / part["file"]).as_posix()
+                                              for part in batch], type=pa.string()),
+                            "rows": pa.array([part["rows"] for part in batch], type=pa.int64()),
+                        })
+                        con.register("_minitopol_result_parts", table)
+                        try:
+                            con.execute("INSERT INTO result_parts SELECT * FROM _minitopol_result_parts "
+                                        "ON CONFLICT DO NOTHING")
+                        finally:
+                            con.unregister("_minitopol_result_parts")
                 con.execute("COMMIT")
             except BaseException:
                 con.execute("ROLLBACK")

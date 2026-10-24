@@ -16,6 +16,33 @@ def sphere_points(count):
 
 
 def sasa_atoms(positions, radii, *, sphere_count=960, probe=1.4):
+    # Limit the optional compiled signature to the normal trajectory inputs.
+    # The original function remains authoritative for unusual direct calls,
+    # including its NumPy return values, warnings and argument errors.
+    if (not isinstance(sphere_count, (int, np.integer))
+            or isinstance(sphere_count, (bool, np.bool_)) or sphere_count <= 0
+            or type(positions) is not np.ndarray or positions.ndim != 2
+            or positions.shape[1] != 3 or positions.dtype not in (np.dtype('f4'), np.dtype('f8'))):
+        return _sasa_atoms_python(positions, radii, sphere_count=sphere_count, probe=probe)
+    inflated = np.asarray(radii) + probe
+    if inflated.dtype != np.dtype('f8') or inflated.ndim != 1 or len(inflated) != len(positions):
+        return _sasa_atoms_python(positions, radii, sphere_count=sphere_count, probe=probe)
+    try:
+        from .accelerated import atom_sasa
+    except ImportError:
+        return _sasa_atoms_python(positions, radii, sphere_count=sphere_count, probe=probe)
+    points = sphere_points(sphere_count)
+    tree = cKDTree(positions)
+    values = np.zeros(len(positions))
+    maximum = inflated.max()
+    for atom, center in enumerate(positions):
+        neighbors = np.asarray(tree.query_ball_point(center, inflated[atom] + maximum), dtype=np.int64)
+        count = atom_sasa(center, positions, neighbors, points, inflated, atom)
+        values[atom] = count / sphere_count * (4 * np.pi * inflated[atom]**2)
+    return values
+
+
+def _sasa_atoms_python(positions, radii, *, sphere_count=960, probe=1.4):
     inflated = np.asarray(radii) + probe
     points = sphere_points(sphere_count)
     tree = cKDTree(positions)

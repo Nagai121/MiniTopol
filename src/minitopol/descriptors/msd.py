@@ -19,6 +19,7 @@ def calculate(ctx, writer):
             if state["atoms_done"]:
                 raise IOError("Committed MSD accumulator is missing")
             group.create_array(name, shape=(ctx.n,), chunks=(ctx.fft_block,), dtype="f8", fill_value=0)
+    slots = (group['slot0'], group['slot1'])
     for point in range(state["atoms_done"], ctx.m):
         dots, prefix = atom_correlation(ctx, point, mean[point], directory / "scratch.zarr")
         current, next_slot = state["slot"], 1 - state["slot"]
@@ -32,7 +33,7 @@ def calculate(ctx, writer):
                 raise ArithmeticError("Negative MSD exceeds floating-point cancellation tolerance")
             value = np.maximum(numerator, 0) / (ctx.n - lag)
             value[lag == 0] = 0
-            group[f"slot{next_slot}"][start:stop] = group[f"slot{current}"][start:stop] + value
+            slots[next_slot][start:stop] = slots[current][start:stop] + value
         # Double-buffered commit: an interrupted atom never alters the previous
         # accumulator. Its uncommitted target slot is overwritten on restart.
         state = {"atoms_done": point + 1, "slot": next_slot}
@@ -44,4 +45,4 @@ def calculate(ctx, writer):
         lag = np.arange(start, stop)
         writer.append(start, pa.table({"lag_frames": lag, "lag_ps": lag * step,
                                        "origins": ctx.n - lag, "atoms": np.full(len(lag), ctx.m),
-                                       "value": group[f"slot{state['slot']}"][start:stop] / ctx.m}))
+                                       "value": slots[state['slot']][start:stop] / ctx.m}))

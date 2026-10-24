@@ -1,10 +1,36 @@
 import pyarrow as pa
+import numpy as np
 
 from .kernels import sasa_atoms
+try:
+    from .csr_sasa import _budgeted_sasa
+except ImportError:
+    _budgeted_sasa=None
 
 
 SCHEMA = pa.schema([("frame", pa.int64()), ("time_ps", pa.float64()), ("level", pa.string()),
                     ("point", pa.int64()), ("residue", pa.int64()), ("value", pa.float64())])
+
+
+def output_tables(frame,time,values,residue_index,res_atoms):
+    """Same schemas, row order, keys and 4096-row boundaries, by columns."""
+    def table(level,point,residue,value):
+        n=len(value)
+        return pa.Table.from_arrays([
+            pa.array(np.full(n,frame),type=pa.int64()),
+            pa.array(np.full(n,time),type=pa.float64()),
+            pa.array([level]*n,type=pa.string()),
+            pa.nulls(n,pa.int64()) if point is None else pa.array(point,type=pa.int64()),
+            pa.nulls(n,pa.int64()) if residue is None else pa.array(residue,type=pa.int64()),
+            pa.array(value,type=pa.float64())],schema=SCHEMA)
+    for part,start in enumerate(range(0,len(values),4096)):
+        stop=min(start+4096,len(values))
+        yield f'atom-{frame}-{part}',table('atom',np.arange(start,stop),residue_index[start:stop],values[start:stop])
+    residues=list(res_atoms)
+    aggregates=np.asarray([values[points].sum() for points in res_atoms.values()])
+    for offset in range(0,len(residues),4096):
+        yield f'residue-{frame}-{offset}',table('residue',None,residues[offset:offset+4096],aggregates[offset:offset+4096])
+    yield f'total-{frame}',table('total',None,None,np.asarray([values.sum()]))
 
 
 def calculate(ctx, writer):
@@ -14,20 +40,7 @@ def calculate(ctx, writer):
             frame = block.start + index
             if writer.has(f"total-{frame}"):
                 continue
-            values = sasa_atoms(positions, radii)
-            rows, part = [], 0
-            for point, value in enumerate(values):
-                rows.append({"frame": frame, "time_ps": block.time[index], "level": "atom", "point": point,
-                             "residue": ctx.atoms["residue_index"][point], "value": value})
-                if len(rows) == 4096:
-                    writer.append(f"atom-{frame}-{part}", pa.Table.from_pylist(rows, schema=SCHEMA))
-                    rows, part = [], part + 1
-            if rows:
-                writer.append(f"atom-{frame}-{part}", pa.Table.from_pylist(rows, schema=SCHEMA))
-            rows = [{"frame": frame, "time_ps": block.time[index], "level": "residue", "point": None,
-                     "residue": r, "value": values[points].sum()} for r, points in ctx.res_atoms.items()]
-            for offset in range(0, len(rows), 4096):
-                writer.append(f"residue-{frame}-{offset}", pa.Table.from_pylist(rows[offset:offset+4096], schema=SCHEMA))
-            writer.append(f"total-{frame}", pa.Table.from_pylist([
-                {"frame": frame, "time_ps": block.time[index], "level": "total", "point": None,
-                 "residue": None, "value": values.sum()}], schema=SCHEMA))
+            values = (_budgeted_sasa(positions,radii,ctx.budget) if _budgeted_sasa is not None
+                      else sasa_atoms(positions,radii))
+            for key,table in output_tables(frame,block.time[index],values,ctx.atoms['residue_index'],ctx.res_atoms):
+                writer.append(key,table)
