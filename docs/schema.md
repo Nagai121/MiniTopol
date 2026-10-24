@@ -13,12 +13,14 @@ Python APIの引数、CLIの `--workspace`、環境変数 `MINITOPOL_WORKSPACE` 
 | `trajectories/<id>/atoms.parquet` | Aの点順序、元の原子番号（0起点）、原子名・元素・残基・セグメント |
 | `trajectories/<id>/annotations.parquet` | 明示的な鎖・連続区間、原子役割・質量・半径の任意上書き。化学結合テーブルは含めない |
 | `trajectories/<id>/manifest.json` | 入力ハッシュ、選択条件、フレーム数、コミット済み境界、完了状態、単位 |
+| `trajectories/<id>/bonds.parquet` | 追加の静的結合表現。Aの原子番号 `point_i < point_j` の無向エッジ |
+| `trajectories/<id>/bonds.json` | 結合表現単独の出典・ハッシュ・完了記録 |
 | `descriptors/<name>/<trajectory>/<representation>/<result-id>.parquet` | 検証後の結果と定義メタデータ |
 | 同名 `.json` | Parquetの完了記録。DB登録前に停止した場合の復旧元 |
 | `descriptors/<name>/<trajectory>/A/<result-id>/part-*.parquet` | 10記述子の分割出力。全パート完成後に正式登録 |
 | `analyses/<id>.json` | 記述子ごとの実行結果、失敗理由、定義ID・結果ID・行数・未定義値数 |
 | `work/<job-key>/` | 中断再開用の位置合わせ座標・集計・FFT中間量。原データは変更しない |
-| `integrated.duckdb` | 完了した軌跡、Cの変換規則、結果の定義・範囲・相対パス。結果数値は複製しない |
+| `integrated.duckdb` | 完了した軌跡、Cの変換規則、結果の定義・範囲・相対パス、独立した結合表現の管理情報。結果数値は複製しない |
 | `locks/` | プロセス間ロック。残存ファイル自体はロック保持を意味しない |
 
 変換規則の正本はDuckDB内の `representations` 表です。
@@ -32,7 +34,7 @@ GROには元素・溶媒種・結合の完全な定義がありません。溶�
 原子順序と全フレームの時刻を維持し、一律の並進・回転除去は行いません。ボックスがないフレームはNaNを保存します。
 
 Registryは用途に応じて最小像距離とNoJump座標の取得を提供します。保存するAは原座標です。前提条件は [Calculatorの文書](calculators.md) に記載しています。
-化学結合の取得・推定・保存、水素結合、内部幾何は今回の対象外です。結合取得は残作業として扱いません。
+TPRに由来する静的な共有結合の接続グラフは、Aとは独立した結合表現として登録できます。原子間距離・PDBによる結合推定、水素結合、内部幾何は対象外です。
 
 ## Cの登録
 

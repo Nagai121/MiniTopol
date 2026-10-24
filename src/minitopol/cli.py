@@ -16,6 +16,13 @@ def main(argv=None):
     sub.add_parser("init")
     sub.add_parser("list")
     sub.add_parser("recover")
+    atlas_check = sub.add_parser("atlas-check")
+    atlas_check.add_argument("dataset")
+    atlas_check.add_argument("--kind", choices=["analysis", "protein", "total"], default="analysis")
+    atlas_import = sub.add_parser("atlas-import")
+    atlas_import.add_argument("dataset")
+    atlas_import.add_argument("--kind", choices=["analysis", "protein", "total"], default="analysis")
+    atlas_import.add_argument("--solvent", nargs="*", default=["SOL", "WAT", "HOH"])
     importing = sub.add_parser("convert")
     importing.add_argument("gro")
     importing.add_argument("xtc")
@@ -46,6 +53,18 @@ def main(argv=None):
     elif args.command == "list":
         print(json.dumps({"trajectories": workspace.list_trajectories(),
                           "representations": Registry(workspace).representations()}))
+    elif args.command == "atlas-check":
+        from .atlas import check_atlas
+        plans = check_atlas(workspace, args.dataset, args.kind)
+        print(json.dumps([{k: v for k, v in plan.items() if k != "source_to_tpr"}
+                          for plan in plans], indent=2))
+    elif args.command == "atlas-import":
+        from .atlas import import_atlas
+        result = import_atlas(workspace, args.dataset, args.kind,
+                              solvent_resnames=args.solvent)
+        print(json.dumps(result, indent=2))
+        if result["status"] != "complete":
+            raise SystemExit(1)
     elif args.command == "convert":
         from pathlib import Path
         elements = json.loads(Path(args.elements).read_text()) if args.elements else None

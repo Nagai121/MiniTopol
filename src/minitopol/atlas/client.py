@@ -1,8 +1,8 @@
 """Small, explicit client for the ATLAS protein molecular-dynamics REST API.
 
-Downloads are archives, not automatically imported trajectories. In particular,
-ATLAS usually supplies PDB/TPR + XTC, while the existing MiniTopol converter
-accepts GRO + XTC; this module never invents a GRO topology.
+Downloads are archives, not automatically imported trajectories.
+The checker/importer performs subsequent validated GRO/PDB + XTC conversion;
+this download module never invents a GRO topology.
 """
 
 from __future__ import annotations

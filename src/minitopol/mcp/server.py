@@ -2,7 +2,8 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from ..atlas import AtlasClient, DownloadLedger
+from ..atlas import AtlasClient, DownloadLedger, check_atlas, import_atlas
+from ..bond_store import BondStore
 from ..converter import convert
 from ..registry import Registry
 from ..workspace import Workspace
@@ -22,10 +23,38 @@ def atlas_download(dataset: str, kind: str = "analysis", extract: bool = True) -
 
     kind: analysis (1000-frame protein), protein (10000-frame protein),
     total (10000-frame full system). Source PDB/TPR/XTC files are not
-    automatically converted to GRO; an appropriate GRO is required to run
-    MiniTopol's existing GRO+XTC converter.
+    automatically converted on download; use atlas_import for validated conversion.
     """
     return AtlasClient().download(Workspace(), dataset, kind, extract=extract)
+
+
+
+@mcp.tool()
+def atlas_check(dataset: str, kind: str = "analysis") -> list[dict]:
+    """Inspect extracted ATLAS replicas and optional TPR correspondence."""
+    plans = check_atlas(Workspace(), dataset, kind)
+    # Large atom-index mappings are consumed internally, never dumped over MCP.
+    return [{k: v for k, v in plan.items() if k != "source_to_tpr"}
+            for plan in plans]
+
+
+@mcp.tool()
+def atlas_import(dataset: str, kind: str = "analysis",
+                 solvent_resnames: list[str] | None = None) -> dict:
+    """Convert each validated ATLAS replica to A and independently add TPR bonds."""
+    solvents = ("SOL", "WAT", "HOH") if solvent_resnames is None else solvent_resnames
+    return import_atlas(Workspace(), dataset, kind, solvent_resnames=solvents)
+
+
+@mcp.tool()
+def get_bond_graph(trajectory: str, limit: int = 1000) -> dict:
+    """Return verified TPR-derived static A-point connectivity (at most 1000 edges)."""
+    if type(limit) is not int or not 1 <= limit <= 1000:
+        raise ValueError("limit must be in 1..1000")
+    workspace = Workspace()
+    table = BondStore(workspace).get(trajectory)
+    return {"trajectory": trajectory, "total_edges": table.num_rows,
+            "edges": table.slice(0, limit).to_pylist()}
 
 
 @mcp.tool()

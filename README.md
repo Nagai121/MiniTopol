@@ -4,7 +4,7 @@ GRO＋XTCの教師トラジェクトリを逐次変換し、分子表現と記�
 基本表現Aは溶媒を除く全重原子で、Zarr v3に原座標・全フレームの時刻・ボックスを保存します。
 原子表と記述子結果はParquet、所在・対応関係の管理と横断参照はDuckDBを使用します。
 
-**Aの10記述子、要求時のPBC取得、逐次・時間集計、分割ParquetとDuckDBへの登録を実装しています。** 計算方式は [承認済み定義 A-1](definitions/A-proposal.md) に従います。化学結合情報・水素結合・内部幾何は対象外です。
+**Aの10記述子、要求時のPBC取得、逐次・時間集計、分割ParquetとDuckDBへの登録を実装しています。** 計算方式は [承認済み定義 A-1](definitions/A-proposal.md) に従います。TPRからの静的な結合表現は独立して追加され、10記述子・A/C座標の定義には影響しません。水素結合・内部幾何の追加計算は対象外です。
 
 ## インストールと起動
 
@@ -78,4 +78,4 @@ CLI、注釈JSON、出力列、中断再開と計算資源については [docs/
 
 ## ATLASとMCP
 
-ATLASからのメタデータ取得・ZIPダウンロードと簡易TSV台帳、ローカルstdio MCPサーバーを追加しました。保存先は既存の`trajectories/`配下です。ATLASのPDB/TPR＋XTCをGRO＋XTCへ自動変換はしません。詳細は[ATLAS・MCPの使い方](docs/atlas-mcp.md)を参照してください。
+ATLASからのメタデータ取得・ZIPダウンロード・簡易TSV台帳、構成チェッカー、Replica別のA変換、TPR由来の独立した結合表現を利用できます。`atlas-check` / `atlas-import` またはMCP経由で明示的に実行します。既存のダウンロード操作だけでは変換は始まりません。詳細は[ATLAS・MCPの使い方](docs/atlas-mcp.md)を参照してください。
