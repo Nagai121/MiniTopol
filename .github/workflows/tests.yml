@@ -12,5 +12,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -e ".[test,acceleration,lossless]"
+      # Zarr >=3.4.1 (required by the lossless extra) needs Python >=3.12.
+      - name: Install test and acceleration dependencies (Python 3.11)
+        if: matrix.python == '3.11'
+        run: python -m pip install -e ".[test,acceleration]"
+      - name: Install lossless dependencies (Python 3.12)
+        if: matrix.python == '3.12'
+        run: python -m pip install -e ".[test,acceleration,lossless]"
       - run: python -m pytest -q
