@@ -13,7 +13,7 @@ Python APIの引数、CLIの `--workspace`、環境変数 `MINITOPOL_WORKSPACE` 
 | `trajectories/<id>/atoms.parquet` | Aの点順序、元の原子番号（0起点）、原子名・元素・残基・セグメント |
 | `trajectories/<id>/annotations.parquet` | 明示的な鎖・連続区間、原子役割・質量・半径の任意上書き。化学結合テーブルは含めない |
 | `trajectories/<id>/manifest.json` | 入力ハッシュ、選択条件、フレーム数、コミット済み境界、完了状態、単位 |
-| `trajectories/<id>/bonds.parquet` | 追加の静的結合表現。Aの原子番号 `point_i < point_j` の無向エッジ |
+| `trajectories/<id>/bonds.parquet` | 追加の静的結合表現。Aの原子番号 `point_i < point_j` の無向エッジ。0本も許可 |
 | `trajectories/<id>/bonds.json` | 結合表現単独の出典・ハッシュ・完了記録 |
 | `descriptors/<name>/<trajectory>/<representation>/<result-id>.parquet` | 検証後の結果と定義メタデータ |
 | 同名 `.json` | Parquetの完了記録。DB登録前に停止した場合の復旧元 |

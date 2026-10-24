@@ -102,3 +102,14 @@ def test_default_workspace_does_not_depend_on_cwd(tmp_path, monkeypatch):
     monkeypatch.setenv("MINITOPOL_WORKSPACE", str(external))
     assert Workspace().path == external
     assert Workspace(tmp_path / "explicit").path == tmp_path / "explicit"
+
+
+
+def test_direct_result_publication_rejects_nonfinite_numbers(tmp_path, trajectory):
+    workspace, tid = imported(tmp_path, trajectory)
+    definition = DescriptorDefinition("example", "1", "A", "test", "dimensionless")
+    with pytest.raises(ValueError, match="Non-finite"):
+        ResultStore(workspace).publish(
+            tid, definition, 0, 1,
+            pa.table({"frame": [0], "value": [float("nan")]}))
+    assert not list((workspace.path / "descriptors").rglob("*.parquet"))

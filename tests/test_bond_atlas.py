@@ -35,15 +35,15 @@ def _fake_tpr(monkeypatch):
         if path.suffix == ".tpr":
             u = _sample_tpr_universe()
             try:
-                return tuple((str(r).upper(), str(n).upper())
-                             for r, n in zip(u.atoms.resnames, u.atoms.names))
+                return (("ALA", "N", 1), ("ALA", "CA", 1), ("ALA", "H", 1),
+                        ("SOL", "OW", 1), ("SOL", "HW1", 1), ("SOL", "HW2", 1))
             finally:
                 u.trajectory.close()
         return original(path)
 
     monkeypatch.setattr(checker, "_labels", labels)
-    monkeypatch.setattr(bond_reconstruction, "_read_tpr",
-                        lambda path: _sample_tpr_universe())
+    monkeypatch.setattr(bond_reconstruction, "_covalent_edges_from_tpr",
+                        lambda path: (6, [(0, 1), (1, 2), (3, 4), (3, 5)]))
 
 
 def test_unique_subsequence_requires_unambiguous_order():
@@ -122,8 +122,11 @@ def test_ambiguous_pairing_fails_before_import(tmp_path, trajectory):
     shutil.copyfile(trajectory[1], directory / (stem + ".xtc"))
     (directory / (stem + ".tpr")).write_bytes(b"one")
     (directory / "other_R1.tpr").write_bytes(b"two")
-    with pytest.raises(ValueError, match="Ambiguous"):
-        check_atlas(workspace, "1k5n_A")
+    plan = check_atlas(workspace, "1k5n_A")[0]
+    assert "Ambiguous" in plan["error"]
+    result = import_atlas(workspace, "1k5n_A")
+    assert result["status"] == "partial"
+    assert result["replicas"][0]["A"] == "failed"
     assert workspace.list_trajectories() == []
 
 
@@ -151,3 +154,99 @@ def test_bond_backfill_and_crash_recovery(tmp_path, trajectory, monkeypatch):
         stream.write(b"corruption")
     with pytest.raises(IOError, match="checksum"):
         Registry(workspace).bonds(tid)
+
+
+
+def test_interaction_types_do_not_confuse_restraints_with_chemical_bonds():
+    from MDAnalysis.topology.tpr.obj import Ilist
+    from minitopol.descriptors.bond_reconstruction import _edges_in_ilists
+
+    interactions = [
+        Ilist(3, ("BONDS", "Bond", 2), [0, 0, 1]),
+        Ilist(3, ("CONSTR", "Constraint", 2), [0, 1, 2]),
+        Ilist(3, ("HARMONIC", "Harmonic", 2), [0, 2, 3]),
+        Ilist(3, ("CONSTRNC", "No Connection", 2), [0, 3, 4]),
+        Ilist(3, ("RESTRAINTPOT", "Restraint", 2), [0, 4, 5]),
+        Ilist(3, ("TABBONDSNC", "No Connection", 2), [0, 5, 6]),
+    ]
+    assert _edges_in_ilists(interactions) == [(0, 1), (1, 2)]
+
+
+def test_isolated_atoms_are_a_valid_empty_bond_graph(tmp_path, trajectory):
+    workspace = Workspace(tmp_path / "ws")
+    tid = convert(workspace, *trajectory[:2], solvent_resnames=["SOL"])
+    assert BondStore(workspace).publish(tid, [], tpr_sha256="source",
+                                        mapping_sha256="map") == 0
+    assert Registry(workspace).bonds(tid).num_rows == 0
+
+
+def test_pdb_is_used_when_gro_atom_count_is_incompatible(tmp_path, trajectory):
+    workspace = Workspace(tmp_path / "ws")
+    directory, stem = _source(workspace)
+    universe = mda.Universe(str(trajectory[0]), str(trajectory[1]))
+    universe.atoms[:2].write(str(directory / (stem + ".gro")))
+    universe.atoms.write(str(directory / (stem + ".pdb")))
+    universe.trajectory.close()
+    shutil.copyfile(trajectory[1], directory / (stem + ".xtc"))
+    plan = check_atlas(workspace, "1k5n_A")[0]
+    assert plan["topology"].endswith(".pdb")
+    result = import_atlas(workspace, "1k5n_A")
+    assert result["replicas"][0]["A"] == "complete"
+
+
+def test_bad_replica_does_not_prevent_good_replica(tmp_path, trajectory):
+    workspace = Workspace(tmp_path / "ws")
+    directory, _ = _source(workspace)
+    for replica in ("R1", "R2"):
+        shutil.copyfile(trajectory[1], directory / f"1k5n_A_{replica}.xtc")
+    shutil.copyfile(trajectory[0], directory / "1k5n_A_R1.gro")
+    plans = check_atlas(workspace, "1k5n_A")
+    assert plans[0]["topology"].endswith("R1.gro")
+    assert plans[1]["error"]
+    result = import_atlas(workspace, "1k5n_A")
+    assert [r["A"] for r in result["replicas"]] == ["complete", "failed"]
+    assert result["status"] == "partial"
+    assert len(workspace.list_trajectories()) == 1
+
+
+def test_tracked_archive_detects_modified_extracted_file(tmp_path, trajectory):
+    from minitopol.atlas.ledger import DownloadLedger
+    from minitopol.atlas.client import _sha256
+    import zipfile
+
+    workspace = Workspace(tmp_path / "ws")
+    directory, stem = _source(workspace)
+    pairs = ((stem + ".gro", trajectory[0]), (stem + ".xtc", trajectory[1]))
+    archive = directory / "1k5n_A_analysis.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name, path in pairs:
+            zf.write(path, name)
+    for name, path in pairs:
+        shutil.copyfile(path, directory / name)
+    DownloadLedger(workspace).put({
+        "dataset": "1k5n_A", "kind": "analysis",
+        "url": "https://www.dsimb.inserm.fr/ATLAS/api/ATLAS/analysis/1k5n_A",
+        "archive": archive.relative_to(workspace.path).as_posix(),
+        "downloaded_at": "2026-10-25T00:00:00Z",
+        "bytes": str(archive.stat().st_size),
+        "sha256": _sha256(archive), "status": "complete", "error": "",
+    })
+    assert check_atlas(workspace, "1k5n_A")[0]["provenance"] == "verified_archive"
+    with (directory / (stem + ".gro")).open("ab") as out:
+        out.write(b"tampered")
+    with pytest.raises(ValueError, match="differs from verified archive"):
+        check_atlas(workspace, "1k5n_A")
+
+
+def test_repeated_residue_names_are_distinguished(tmp_path):
+    import MDAnalysis as mda
+    from minitopol.atlas.checker import _labels
+    u = mda.Universe.empty(4, n_residues=2, atom_resindex=[0, 0, 1, 1], trajectory=True)
+    u.add_TopologyAttr("names", ["N", "CA", "N", "CA"])
+    u.add_TopologyAttr("resnames", ["ALA", "ALA"])
+    u.add_TopologyAttr("resids", [1, 2])
+    u.atoms.positions = [[0, 0, 0], [1, 0, 0], [3, 0, 0], [4, 0, 0]]
+    pdb = tmp_path / "repeat.pdb"
+    u.atoms.write(str(pdb))
+    labels = _labels(pdb)
+    assert labels[0] != labels[2]
