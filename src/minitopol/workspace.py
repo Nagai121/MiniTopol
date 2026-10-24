@@ -39,6 +39,9 @@ class Workspace:
             con.execute("""CREATE TABLE IF NOT EXISTS result_parts(
                 result_id VARCHAR, part_index BIGINT, path VARCHAR UNIQUE NOT NULL,
                 rows BIGINT NOT NULL, PRIMARY KEY(result_id, part_index))""")
+            # Independent bond graph catalog; no change to A/C or result schemas.
+            con.execute("""CREATE TABLE IF NOT EXISTS bond_graphs(
+                trajectory VARCHAR PRIMARY KEY, info VARCHAR NOT NULL)""")
 
     @staticmethod
     def default_path():

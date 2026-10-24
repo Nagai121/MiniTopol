@@ -117,6 +117,15 @@ class Registry:
         self.manifest(trajectory)
         return annotations(self, trajectory)
 
+    def bonds(self, trajectory):
+        """Get an independently stored static TPR-derived A-point bond graph."""
+        from .bond_store import BondStore
+        return BondStore(self.workspace).get(trajectory)
+
+    def bond_info(self, trajectory):
+        from .bond_store import BondStore
+        return BondStore(self.workspace).info(trajectory)
+
     def coordinate_blocks(self, trajectory, **kwargs):
         from .coordinates import coordinate_blocks
         return coordinate_blocks(self, trajectory, **kwargs)

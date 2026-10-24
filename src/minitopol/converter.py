@@ -1,4 +1,4 @@
-"""GRO + XTC to an unaligned, unwrapped-independent heavy-atom base A."""
+"""GRO/PDB + XTC to an unaligned, unwrapped-independent heavy-atom base A."""
 
 from pathlib import Path
 from contextlib import contextmanager
@@ -15,7 +15,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
             atom_elements=None, chunk_frames=None):
     """Convert all frames, resuming only at committed Zarr chunk boundaries.
 
-    Solvent residue names are explicit because GRO does not identify solvent.
+    Solvent residue names are explicit for both GRO and PDB sources.
     Optional atom_elements supplies one element for every *source* atom.
     Otherwise MDAnalysis guesses elements from names; this provenance is saved.
     No chemical bonds are inferred. Original selected coordinates and all box
@@ -26,7 +26,10 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
     if isinstance(solvent_resnames, str):
         raise TypeError("solvent_resnames must be a sequence of residue names")
     solvents = sorted(set(solvent_resnames))
-    source = {"gro": fingerprint(gro), "xtc": fingerprint(xtc)}
+    source_format = Path(gro).suffix.lower().lstrip(".")
+    if source_format not in ("gro", "pdb"):
+        raise ValueError("A source topology must be GRO or PDB")
+    source = {source_format: fingerprint(gro), "xtc": fingerprint(xtc)}
     with _universe(gro, xtc) as universe:
         if atom_elements is None:
             universe.guess_TopologyAttrs(to_guess=["elements"])
@@ -61,7 +64,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                     raise ValueError("Trajectory ID already belongs to different sources/options")
             else:
                 manifest = {"schema": 1, "identity": identity, "options": options,
-                            "gro_path": str(Path(gro).resolve()), "xtc_path": str(Path(xtc).resolve()),
+                            source_format + "_path": str(Path(gro).resolve()), "xtc_path": str(Path(xtc).resolve()),
                             "element_origin": element_origin, "frames": frames, "atoms": atoms,
                             "committed_frames": 0, "status": "converting",
                             "coordinate_unit": "angstrom", "time_unit": "ps"}

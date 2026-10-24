@@ -38,9 +38,19 @@ extraction fails, the ledger reports `failed` and includes the error;
 verified ZIP archives are retained for safe extraction retry.
 
 ATLAS usually supplies PDB/TPR + XTC rather than a matching GRO + XTC.
-This feature does **not** fabricate a GRO or convert ATLAS PDB/TPR into GRO.
-Convert only after acquiring a verified, atom-order-compatible GRO/XTC pair.
-The existing Converter and scientific definitions remain unchanged.
+After download and extraction, use the separate checker/import step:
+`python -m minitopol atlas-check 1k5n_A --kind analysis` and
+`python -m minitopol atlas-import 1k5n_A --kind analysis`.
+The checker identifies XTC replicas, selects unambiguous GRO/PDB input topologies,
+checks XTC atom counts and validates a unique ordered TPR atom mapping.
+Each replica becomes a separate A trajectory; a usable TPR also produces a
+separate static heavy-atom covalent graph. TPR errors are reported separately
+and never destroy an already completed A. Missing TPR permits A-only import.
+No dummy GRO, PDB-derived bonds or distance-based bond inference is used.
+XTC itself has no atom identifiers: matching counts plus unambiguous ATLAS
+file naming do not independently prove the actual atom order inside XTC.
+Unverifiable pairings and ambiguous TPR mappings must not be silently guessed.
+The original GRO + XTC converter and the ten scientific definitions remain unchanged.
 Full-sized live ATLAS download has not been verified in CI (offline mocks only).
 The ZIP is checked for a valid central directory, the presence of an XTC,
 and CRC integrity of all members, in addition to HTTP Content-Length when
@@ -68,7 +78,7 @@ Configure an MCP client to launch the installed `minitopol-mcp` command.
 The server communicates via stdout JSON-RPC; do not print ordinary
 diagnostics on stdout. No remote HTTP MCP listener is started.
 
-Available tools include ATLAS metadata/download/ledger, converted trajectory
+Available tools include ATLAS metadata/download/ledger, atlas_check, atlas_import, get_bond_graph, converted trajectory
 and representation listing, GRO+XTC conversion, chain annotation, A
 descriptor calculation, C representation registration/definition reading, completed descriptor result
 metadata listing, and limited result row retrieval (at most 1000 rows per call).
@@ -79,3 +89,20 @@ or result tables are deliberately not dumped through MCP tools.
 
 No API keys are needed for the public ATLAS endpoints. Local MCP clients
 still receive filesystem access permitted to their OS user.
+
+## Independent bond graph
+
+`BondStore` and `Registry.bonds(trajectory)` expose a verified Parquet edge table
+with columns `point_i`, `point_j` (0-based A heavy-atom point indices).
+The original A arrays, A manifest, existing scientific descriptors and the ATLAS
+TSV ledger are not altered. A bond publication is independently crash-resumable,
+checksum verified and idempotent for the same A/TPR/mapping.
+The logical bond DB is the dedicated `bond_graphs` table in the existing DuckDB;
+the edge payload lives in `trajectories/<id>/bonds.parquet`, with `bonds.json`
+as its independently published completion marker.
+
+`atlas_import` reports separate A/bond statuses per replica. `atlas_check`
+only examines already extracted files. Use `atlas_download` first for retrieval;
+it does not automatically start conversion. For a pre-existing A, Python's
+`reconstruct_bonds(workspace, trajectory, tpr, validated_source_to_tpr)`
+adds only the bond graph without recomputing A.
