@@ -76,6 +76,14 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
                                  if name in {"sasa", "ramachandran", "secondary_structure", "contacts", "time_correlation"}
                                  else ctx.layout)
                 if name == "ramachandran": output_layout = {**output_layout, "angle_intermediates": "float64-v1"}
+                if name == "contacts" and ctx.mode != "nonperiodic":
+                    output_layout = {**output_layout, "output_partitioning": "periodic-spatial-zstd-v1",
+                                     "spatial_memory_bytes": ctx.budget,
+                                     "spatial_part_rows": max(4096,min(16384,ctx.budget//16384))}
+                if name in {'sasa','ramachandran','secondary_structure'}:
+                    from .compact_output import _frames
+                    output_layout={**output_layout,'output_partitioning':'bounded-columnar-v2',
+                                   'output_batch_frames':_frames(ctx,name),'output_budget_bytes':ctx.budget}
                 with ResultStore(workspace).dataset(trajectory, definition, layout=output_layout) as writer:
                     if not writer.complete:
                         module = import_module("." + CALCULATORS[name][0], __package__)

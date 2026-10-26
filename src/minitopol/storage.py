@@ -89,7 +89,21 @@ def atomic_json(path: Path, data) -> None:
 
 
 
-def _parquet_options(table):
+_BUILTIN_RESULTS = frozenset({'contacts','dynamic_correlation','gyration','msd','ramachandran','rmsd','rmsf','sasa','secondary_structure','time_correlation'})
+_RESULT_COLUMNS = frozenset({'trajectory','representation','descriptor','definition_id'})
+
+def _basic_result_schema(schema, *, metadata_dictionary=False):
+    import pyarrow as pa
+    for field in schema:
+        kind=field.type
+        if metadata_dictionary and field.name in _RESULT_COLUMNS and pa.types.is_dictionary(kind):
+            if not pa.types.is_string(kind.value_type):return False
+            kind=kind.value_type
+        if field.metadata is not None or not field.nullable or not (pa.types.is_int64(kind) or pa.types.is_float64(kind) or pa.types.is_string(kind)):
+            return False
+    return True
+
+def _parquet_options(table, *, _metadata_dictionary=False):
     # Standard Parquet encodings only; preserve schema, rows, nulls and values.
     # Restrict the policy to built-in result schemas; other callers keep defaults.
     import pyarrow as pa
@@ -104,11 +118,13 @@ def _parquet_options(table):
     if not isinstance(descriptor, str):
         return {"compression": "zstd"}
     if any(not (pa.types.is_int64(field.type) or pa.types.is_float64(field.type)
-                or pa.types.is_string(field.type)) for field in table.schema):
+                or pa.types.is_string(field.type)
+                or (_metadata_dictionary and field.name in _RESULT_COLUMNS and pa.types.is_dictionary(field.type) and pa.types.is_string(field.type.value_type))) for field in table.schema):
         return {"compression": "zstd"}
     if descriptor not in {"contacts", "dynamic_correlation", "gyration", "msd", "ramachandran", "rmsd", "rmsf", "sasa", "secondary_structure", "time_correlation"}:
         return {"compression": "zstd"}
-    dictionary = [field.name for field in table.schema if pa.types.is_string(field.type)]
+    dictionary = [field.name for field in table.schema if pa.types.is_string(field.type)
+                  or (_metadata_dictionary and field.name in _RESULT_COLUMNS and pa.types.is_dictionary(field.type))]
     if descriptor == "sasa":
         dictionary += [name for name in ("value", "time_ps") if name in table.column_names]
     encoding = {field.name: ("DELTA_BINARY_PACKED" if pa.types.is_integer(field.type)
@@ -117,12 +133,12 @@ def _parquet_options(table):
     return {"compression": "zstd", "compression_level": 3,
             "use_dictionary": dictionary, "column_encoding": encoding}
 
-def atomic_parquet(path: Path, table) -> None:
+def _publish_parquet(path: Path, table, write) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
     os.close(fd)
     try:
-        pq.write_table(table, name, **_parquet_options(table))
+        write(table, name)
         if pq.read_metadata(name).num_rows != len(table):
             raise IOError("Parquet row count verification failed")
         with open(name, "rb+") as stream:
@@ -130,6 +146,28 @@ def atomic_parquet(path: Path, table) -> None:
         _replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
+
+def atomic_parquet(path: Path, table) -> None:
+    def write(value,name):pq.write_table(value,name,**_parquet_options(value))
+    _publish_parquet(path,table,write)
+
+def _write_compact_result(table, name):
+    # store_schema=False also omits application metadata in Arrow 26. Add it
+    # explicitly: the scientific metadata is mandatory, not a saving target.
+    with pq.ParquetWriter(name,table.schema,store_schema=False,
+                          **_parquet_options(table,_metadata_dictionary=True)) as writer:
+        writer.add_key_value_metadata(table.schema.metadata)
+        writer.write_table(table)
+
+def _atomic_result_parquet(path: Path, table) -> None:
+    metadata=table.schema.metadata or {}
+    try:
+        name=json.loads(metadata[b'minitopol'])['definition']['name']
+    except (KeyError,TypeError,ValueError,UnicodeError):
+        return atomic_parquet(path,table)
+    if set(metadata)!={b'minitopol'} or not isinstance(name,str) or name not in _BUILTIN_RESULTS or not _basic_result_schema(table.schema,metadata_dictionary=True):
+        return atomic_parquet(path,table)
+    _publish_parquet(path,table,_write_compact_result)
 
 
 def read_json(path: Path):

@@ -18,6 +18,14 @@ python -m minitopol list
 python -m pytest -q
 ```
 
+CPUの高速計算には `.[acceleration,lossless]`、独立軌跡の並列実行には
+`.[parallel]` を追加します。`lossless` はPython 3.12以上で使用します。
+NVIDIA GPUを利用する場合は `.[gpu,lossless,parallel]` を使用します。
+対応するNVIDIAドライバーが必要です。CUDAライブラリはインストール済みの
+`CUDA_HOME` / `CUDA_PATH`、またはGPU extraのNVIDIAパッケージから検出します。
+MiniTopol自体がドライバーの変更やダウンロードを行うことはありません。
+GPUを使わない場合は環境変数 `MINITOPOL_SASA_DEVICE=cpu` を指定します。
+
 `--solvent` は実際の入力に含まれる溶媒残基名を指定します。溶媒がない場合も `--solvent` 自体は付け、名前を省略します。
 GROの原子名からの元素推定が適さない場合は、全入力原子分の元素配列をJSONで用意し、`--elements elements.json` で指定します。
 
@@ -57,6 +65,13 @@ print(report["status"], report["results"])
 非周期入力は `coordinate_mode="nonperiodic"`、既に連続化した周期入力は `coordinate_mode="continuous", initial_whole=True` を明示します。
 入力条件を満たさない記述子は理由付きで失敗を報告し、正常な結果として登録しません。未定義の角度・ゼロ分散は理由付きnullで保存します。
 CLI、注釈JSON、出力列、中断再開と計算資源については [docs/calculators.md](docs/calculators.md) を参照してください。
+
+独立した複数入力は `python -m minitopol run jobs.json` またはMCPの
+`run_trajectory_pipelines` で処理できます。ジョブごとに別Workspaceを指定し、
+変換・明示した注釈・任意のTPR結合復元・記述子計算を順に実行します。
+既定は最大6プロセス、各2 nativeスレッド、最大2ジョブでGPUを使用し、
+親・子プロセス合計RSSを4GiBに制限します。入力形式と再開方法は
+[計算資源と並列実行](docs/calculators.md#独立軌跡の並列実行)を参照してください。
 
 初期状態ではAのみです。Cの登録と全軌跡の生成は分離しています。
 `Registry.register` に対象軌跡・変換規則・版・記述子定義を渡して登録し、必要な範囲だけ `registry.blocks(trajectory_id, "C1")` から生成します。

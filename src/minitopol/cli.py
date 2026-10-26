@@ -16,6 +16,12 @@ def main(argv=None):
     sub.add_parser("init")
     sub.add_parser("list")
     sub.add_parser("recover")
+    run = sub.add_parser("run")
+    run.add_argument("jobs", help="JSON array of independent trajectory pipeline jobs")
+    run.add_argument("--workers", type=int, default=6)
+    run.add_argument("--native-threads", type=int, default=2)
+    run.add_argument("--gpu-workers", type=int, default=2)
+    run.add_argument("--rss-limit-mb", type=float, default=4096)
     atlas_check = sub.add_parser("atlas-check")
     atlas_check.add_argument("dataset")
     atlas_check.add_argument("--kind", choices=["analysis", "protein", "total"], default="analysis")
@@ -47,6 +53,25 @@ def main(argv=None):
     calculate.add_argument("--pair-block", type=int, default=32)
     calculate.add_argument("--fft-block", type=int, help="Default: adapt FFT time tile to the memory budget")
     args = parser.parse_args(argv)
+    if args.command == "run":
+        if args.workspace:
+            parser.error("run uses the explicit workspace in each job")
+        from pathlib import Path
+        from .batch import run_pipelines
+        path = Path(args.jobs).resolve()
+        jobs = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(jobs, list):
+            for job in jobs:
+                if isinstance(job, dict):
+                    for field in ("workspace", "gro", "xtc", "tpr"):
+                        if field in job:
+                            job[field] = str(path.parent / job[field])
+        report = run_pipelines(jobs, workers=args.workers, native_threads=args.native_threads,
+                               gpu_workers=args.gpu_workers, rss_limit_mb=args.rss_limit_mb)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if report["status"] != "complete":
+            raise SystemExit(1)
+        return
     workspace = Workspace(args.workspace)
     if args.command == "init":
         print(workspace.path)

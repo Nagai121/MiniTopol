@@ -129,4 +129,63 @@ python -m minitopol --workspace /data/MiniTopol recover
 
 修正前に作られた検証記録のない途中キャッシュは、安全に再利用できないため停止します。キャッシュや既存の結果を自動削除・上書きしません。再計算する場合は既存Workspaceを保持した別のWorkspaceへ同じ入力を変換して実行できます。完成済みParquetの形式・定義ID・再利用方法は変わりません。
 
-この検証の対象は位置合わせ用の中間キャッシュです。元のA.zarr全体やMSD等の別の中間配列に、今回新たな完全性検証を追加するものではありません。
+この検証の対象は位置合わせ用の中間キャッシュです。元のA.zarr全体やMSD等の別の中間配列に、同じ完全性検証を適用するものではありません。
+
+## 独立軌跡の並列実行
+
+`minitopol run jobs.json` は独立したWorkspaceで各入力を処理します。
+`jobs.json` は次のような配列です。ファイル内の相対パスはJSONの所在を基準にします。
+鎖・連続区間・元素・TPR原子対応は確認済みの情報を指定してください。
+
+```json
+[
+  {
+    "workspace": "workspaces/replica1",
+    "gro": "data/replica1.gro",
+    "xtc": "data/replica1.xtc",
+    "solvent_resnames": ["SOL"],
+    "trajectory_id": "replica1",
+    "analysis": {
+      "coordinate_mode": "nojump",
+      "initial_whole": true,
+      "half_box_steps": true,
+      "memory_mb": 128
+    }
+  }
+]
+```
+
+`annotation` には `Registry.annotate` の引数（例：`chains`）を渡せます。
+`atom_elements` は全入力原子分の明示的な元素配列です。
+TPR結合復元には `tpr` と確認済みの `source_to_tpr` 配列を両方指定します。
+これらを省略した場合に鎖や結合を推測することはありません。
+`analysis` は `analyze` の引数です。条件を満たさない記述子は理由付きで失敗します。
+
+`estimated_work` を指定すると降順で実行します。既知のA原子数×フレーム数などの
+正の見積値を指定でき、未指定は同じ重みとして入力順を保ちます。
+最大 `--gpu-workers` 個の重いジョブだけGPUを利用し、ほかはCUDA contextを生成しません。
+既定は `--workers 6 --native-threads 2 --gpu-workers 2 --rss-limit-mb 4096` です。
+`native-threads` は各子プロセスのNumbaスレッド上限です。Contactsのフレーム処理などは
+別途、作業メモリ予算内で少数のスレッドを使用します。
+GPUや追加ライブラリがない場合、対象範囲・予算を満たさない場合はCPU経路を使います。
+実行中のGPUエラーを無制限に再試行することはありません。
+
+各ジョブの作業予算と、Python・ライブラリ・CUDA contextを含むプロセスRSSは別です。
+RSS上限超過や呼び出し中断では所有する子プロセスだけを停止し、途中データを保持します。
+通常のジョブ失敗では起動済みの独立ジョブを完了させ、新しいジョブを起動しません。
+ログと制御情報は各Workspaceの `.pipeline/` 内に保存します。
+同じJSONで再実行すると既存の完成結果を検証し、未完了部分を再開します。
+同じWorkspaceを複数ジョブや複数runへ同時に割り当てることはできません。
+
+## 保存と実行経路
+
+SASAのGPU経路も960点、原子半径、プローブ半径、厳密な遮蔽判定を維持します。
+原子順序・フレーム順序・PBCの定義を変えず、CPU経路へ戻る場合も全対象を計算します。
+MSDの新規一時accumulatorは `lossless` extraがある場合PCodecを使い、
+原子ごとの二重バッファ確定を維持します。既存の一時配列は保存済みのcodecで読みます。
+追加ライブラリがない場合はZarr既定の可逆codecを使います。
+
+完成結果は従来どおりParquetとDuckDBから取得できます。
+途中結果の出力分割方式が異なる版では再開を拒否します。未完了データを元の版で
+完了するか、元Workspaceを保持した別のWorkspaceを使用してください。
+途中状態のlayoutを書き換えて再開させることはしません。

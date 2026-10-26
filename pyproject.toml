@@ -13,6 +13,8 @@ dependencies = ["numpy>=2,<3", "scipy>=1.11", "MDAnalysis>=2.10,<3", "zarr>=3.1,
 test = ["pytest>=8", "mdtraj>=1.11,<2", "mcp>=1.10,<2"]
 mcp = ["mcp>=1.10,<2"]
 acceleration = ["numba>=0.68,<0.69"]
+gpu = ["numba>=0.68,<0.69", "nvidia-cuda-nvcc-cu12==12.9.86", "nvidia-cuda-runtime-cu12==12.9.79"]
+parallel = ["psutil>=6"]
 lossless = ["pcodec==1.0.4", "zarr>=3.4.1,<4", "numcodecs>=0.17,<0.18"]
 
 [project.scripts]

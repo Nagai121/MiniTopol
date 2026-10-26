@@ -99,6 +99,14 @@ def backbone_quads(ctx):
     return quads, reasons
 
 
+def _index_plan(quads):
+    plan = {}
+    for angle in ('phi', 'psi'):
+        usable = [i for i, quad in enumerate(quads[angle]) if quad is not None]
+        plan[angle] = (usable, np.asarray([quads[angle][i] for i in usable]))
+    return plan
+
+
 def backbone_angles(positions, box, quads, reasons, *, periodic):
     values, why = {}, {name: list(items) for name, items in reasons.items()}
     for angle in ("phi", "psi"):
@@ -119,15 +127,36 @@ def backbone_angles(positions, box, quads, reasons, *, periodic):
     return values, why
 
 
+def _planned_angles(positions, box, quads, reasons, plan, *, periodic):
+    values, why = {}, {name: list(items) for name, items in reasons.items()}
+    for angle in ("phi", "psi"):
+        result = np.full(len(quads[angle]), np.nan)
+        usable, indices = plan[angle]
+        if usable:
+            xyz = positions[indices]
+            vectors = np.diff(xyz, axis=1)
+            if periodic:
+                vectors = minimum_vectors(vectors, box)
+            rebuilt = np.concatenate([np.zeros((len(usable), 1, 3)), np.cumsum(vectors, axis=1)], axis=1)
+            radians = calc_dihedrals(rebuilt[:, 0], rebuilt[:, 1], rebuilt[:, 2], rebuilt[:, 3])
+            result[usable] = (np.rad2deg(radians) + 180) % 360 - 180
+            for i in usable:
+                if not np.isfinite(result[i]):
+                    why[angle][i] = "degenerate_dihedral"
+        values[angle] = result
+    return values, why
+
+
 def backbone_frames(ctx, writer):
     """Yield uncommitted frames with shared backbone angles and missing reasons."""
     quads, reasons = backbone_quads(ctx)
+    plan = _index_plan(quads)
     for block in ctx.registry.blocks(ctx.trajectory, chunk_frames=ctx.chunk):
         for offset, xyz in enumerate(block.positions):
             frame = block.start + offset
             if writer.has(frame):
                 continue
-            angles, why = backbone_angles(xyz, block.box[offset], quads, reasons, periodic=ctx.mode != "nonperiodic")
+            angles, why = _planned_angles(xyz, block.box[offset], quads, reasons, plan, periodic=ctx.mode != "nonperiodic")
             yield frame, block.time[offset], angles, why
 
 

@@ -27,6 +27,14 @@ def minimum_residue_distance(ctx, xyz, a, b, box):
 
 
 def calculate(ctx, writer):
+    if ctx.mode != 'nonperiodic':
+        from .periodic_contacts import calculate as periodic, UseOriginal
+        try:
+            return periodic(ctx, writer)
+        except UseOriginal:
+            if any(str(key).startswith('state-compact-') for key in writer.by_key):
+                raise ValueError('Resume periodic spatial parts only with their original supported inputs and memory layout')
+            pass
     if ctx.mode == 'nonperiodic':
         try:
             from .spatial_contacts import calculate as spatial, UseOriginal
@@ -58,12 +66,20 @@ def _calculate_original(ctx, writer):
                 writer.append(key, pa.Table.from_pylist([], schema=SCHEMA))
                 continue
             counts = {pair: 0 for pair in pairs}
+            try:
+                from .contact_reduction import prepare, frame_minima
+            except ImportError:
+                plan = None
+            else:
+                plan = prepare(ctx.res_atoms, pairs, len(ctx.atoms['residue_index']))
             for block in ctx.registry.blocks(ctx.trajectory, chunk_frames=ctx.chunk):
                 rows, part = [], 0
                 for offset, xyz in enumerate(block.positions):
                     box = box_dimensions(block.box[offset]) if ctx.mode != "nonperiodic" else None
-                    for r, s in pairs:
-                        distance = minimum_residue_distance(ctx, xyz, ctx.res_atoms[r], ctx.res_atoms[s], box)
+                    minima = frame_minima(xyz, box, plan, ctx.budget) if plan is not None else None
+                    for pair_index, (r, s) in enumerate(pairs):
+                        distance = (minimum_residue_distance(ctx, xyz, ctx.res_atoms[r], ctx.res_atoms[s], box)
+                                    if minima is None else float(minima[pair_index]))
                         if distance <= 4.5:
                             counts[r, s] += 1
                             rows.append({"level": "state", "frame": block.start + offset, "time_ps": block.time[offset],

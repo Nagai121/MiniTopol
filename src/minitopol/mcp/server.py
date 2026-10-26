@@ -12,6 +12,21 @@ mcp = FastMCP("MiniTopol")
 
 
 @mcp.tool()
+def run_trajectory_pipelines(jobs: list[dict], workers: int = 6,
+                             native_threads: int = 2, gpu_workers: int = 2,
+                             rss_limit_mb: float = 4096) -> dict:
+    """Synchronously convert and analyze independent jobs in separate Workspaces.
+
+    Each job explicitly supplies workspace, gro, xtc, solvent_resnames and
+    analysis.coordinate_mode. Optional annotation and TPR atom mapping are
+    never inferred. Only the largest gpu_workers jobs may initialize CUDA.
+    """
+    from ..batch import run_pipelines
+    return run_pipelines(jobs, workers=workers, native_threads=native_threads,
+                         gpu_workers=gpu_workers, rss_limit_mb=rss_limit_mb)
+
+
+@mcp.tool()
 def atlas_metadata(dataset: str) -> dict:
     """Get ATLAS metadata for a PDB-chain ID such as 1k5n_A."""
     return AtlasClient().metadata(dataset)

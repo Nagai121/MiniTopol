@@ -1,15 +1,31 @@
 """Verified Parquet publication followed by idempotent catalog registration."""
 
-import hashlib
+import hashlib,io
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from ..registry import Registry
 from ..storage import atomic_json, atomic_parquet, canonical, digest, fingerprint, read_json
+from ..storage import _basic_result_schema, _BUILTIN_RESULTS
+
+class _SHA256Sink(io.RawIOBase):
+    def __init__(self):
+        super().__init__();self.hasher=hashlib.sha256();self.position=0
+    def writable(self):return True
+    def tell(self):return self.position
+    def write(self,data):
+        self.hasher.update(data);self.position+=len(data);return len(data)
 
 
 def _payload_hash(table):
+    # Same combined-table IPC stream, including EOS and alignment bytes. Only
+    # its destination changes; legacy payload hashes must remain identical.
+    if isinstance(table,pa.Table) and table.nbytes>=256*1024:
+        sink=_SHA256Sink()
+        with pa.ipc.new_stream(sink,table.schema) as stream:
+            stream.write_table(table.combine_chunks())
+        return sink.hasher.hexdigest()
     buffer = pa.BufferOutputStream()
     with pa.ipc.new_stream(buffer, table.schema) as stream:
         stream.write_table(table.combine_chunks())
@@ -23,6 +39,20 @@ def with_result_metadata(table, info):
                         ("descriptor", definition["name"]), ("definition_id", digest(definition))):
         table = table.append_column(name, pa.repeat(pa.scalar(value, type=pa.string()), len(table)))
     return table.replace_schema_metadata({b"minitopol": canonical(info).encode()})
+
+def _with_compact_result_metadata(table, info):
+    # This private writer path never changes the existing public helper's
+    # StringArray return type. Arbitrary/extension/field-metadata schemas retain
+    # the original serialized Arrow schema and metadata construction.
+    if info['definition']['name'] not in _BUILTIN_RESULTS or not _basic_result_schema(table.schema):
+        return with_result_metadata(table,info)
+    definition=info['definition']
+    for name,value in (('trajectory',info['trajectory']),('representation',definition['representation']),
+                       ('descriptor',definition['name']),('definition_id',digest(definition))):
+        indices=pa.repeat(pa.scalar(0,type=pa.int8()),len(table))
+        values=pa.array([value],type=pa.string())
+        table=table.append_column(name,pa.DictionaryArray.from_arrays(indices,values))
+    return table.replace_schema_metadata({b'minitopol':canonical(info).encode()})
 
 
 class ResultStore:

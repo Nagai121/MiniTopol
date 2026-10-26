@@ -7,8 +7,9 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from ..registry import Registry
-from ..storage import atomic_json, atomic_parquet, canonical, digest, fingerprint, read_json
-from .results import _payload_hash, with_result_metadata
+from ..storage import atomic_json, canonical, digest, fingerprint, read_json
+from ..storage import _atomic_result_parquet as atomic_parquet
+from .results import _payload_hash, _with_compact_result_metadata as with_result_metadata
 
 
 def verify_part(path, part, info):

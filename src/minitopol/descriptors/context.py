@@ -100,7 +100,15 @@ class AnalysisContext:
         self.prepare_aligned()
         if indices is None:
             return self.cache["positions"][start:stop]
-        return self.cache["positions"].oindex[start:stop, np.asarray(indices, dtype=np.int64), :]
+        points = np.asarray(indices, dtype=np.int64)
+        positions = self.cache["positions"]
+        # Guard shape/bounds/order. Negative, repeated, empty, multidimensional
+        # and otherwise unusual selections preserve original oindex behavior.
+        if (points.ndim == 1 and len(points) and points[0] >= 0
+                and points[-1] < positions.shape[1]
+                and np.all(np.diff(points) == 1)):
+            return positions[start:stop, int(points[0]):int(points[-1])+1, :]
+        return positions.oindex[start:stop, points, :]
 
     def aligned_blocks(self):
         self.prepare_aligned()
