@@ -147,7 +147,7 @@ def _planned_angles(positions, box, quads, reasons, plan, *, periodic):
     return values, why
 
 
-def backbone_frames(ctx, writer):
+def _backbone_frames_scalar(ctx, writer):
     """Yield uncommitted frames with shared backbone angles and missing reasons."""
     quads, reasons = backbone_quads(ctx)
     plan = _index_plan(quads)
@@ -167,3 +167,31 @@ def secondary_labels(phi, psi):
     labels[helix], labels[extended] = "helix_like", "extended_like"
     labels[~(np.isfinite(phi) & np.isfinite(psi))] = None
     return labels
+
+def backbone_frames(ctx,writer):
+    """Bounded frames with legacy raw-coordinate difference precision intact."""
+    quads,reasons=backbone_quads(ctx);plan=_index_plan(quads)
+    nr=len(quads['phi']);batch=max(1,min(16,ctx.budget//max(1,ctx.m*24+nr*1024)//16))
+    for block in ctx.registry.blocks(ctx.trajectory,chunk_frames=ctx.chunk):
+        for start in range(0,len(block.positions),batch):
+            offsets=[i for i in range(start,min(start+batch,len(block.positions))) if not writer.has(block.start+i)]
+            if not offsets:continue
+            positions=block.positions[offsets];count=len(offsets)
+            values={};why={a:[list(reasons[a]) for _ in offsets] for a in ('phi','psi')}
+            for angle in ('phi','psi'):
+                result=np.full((count,len(quads[angle])),np.nan)
+                usable,indices=plan[angle]
+                if usable:
+                    xyz=positions[:,indices]
+                    vectors=np.diff(xyz,axis=2)
+                    if ctx.mode!='nonperiodic':
+                        vectors=np.stack([minimum_vectors(vectors[f],block.box[offset]) for f,offset in enumerate(offsets)])
+                    flat=vectors.reshape(-1,3,3)
+                    rebuilt=np.concatenate([np.zeros((len(flat),1,3)),np.cumsum(flat,axis=1)],axis=1)
+                    radians=calc_dihedrals(rebuilt[:,0],rebuilt[:,1],rebuilt[:,2],rebuilt[:,3])
+                    angles=((np.rad2deg(radians)+180)%360-180).reshape(count,len(usable))
+                    result[:,usable]=angles
+                    for f,j in np.argwhere(~np.isfinite(angles)):why[angle][f][usable[j]]='degenerate_dihedral'
+                values[angle]=result
+            for f,offset in enumerate(offsets):
+                yield block.start+offset,block.time[offset],{a:values[a][f] for a in values},{a:why[a][f] for a in why}

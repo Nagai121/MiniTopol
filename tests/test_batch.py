@@ -24,7 +24,7 @@ def test_independent_processes_and_completed_rerun_preserve_parts(tmp_path, traj
     assert all(len(r["analysis"]["results"]) == 1 for r in result["results"])
     ws = Workspace(jobs[0]["workspace"])
     assert Registry(ws).manifest("one")["frames"] == 9
-    parts = list((ws.path / "descriptors").rglob("*.parquet"));assert parts
+    parts = [p for p in (ws.path / "descriptors").rglob("*") if p.is_file() and p.suffix in (".parquet", ".sct", ".vram")];assert parts
     before = {p: (fingerprint(p)["sha256"], p.stat().st_mtime_ns) for p in parts}
     again = run_pipelines(jobs, workers=2, native_threads=1, gpu_workers=0)
     assert again["status"] == "complete"

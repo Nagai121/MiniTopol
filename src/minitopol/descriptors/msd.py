@@ -37,6 +37,7 @@ def calculate(ctx, writer):
     cached = state['atoms_done'] < ctx.m and ctx.fft_block >= ctx.n and ctx.n * 16 <= ctx.budget // 64
     accumulator = np.asarray(slots[state['slot']][:]) if cached else None
     next_accumulator = np.empty(ctx.n) if cached else None
+    durable_slot = state["slot"]
     for point in range(state["atoms_done"], ctx.m):
         dots, prefix = atom_correlation(ctx, point, mean[point], directory / "scratch.zarr")
         current, next_slot = state["slot"], 1 - state["slot"]
@@ -53,13 +54,19 @@ def calculate(ctx, writer):
             if cached:
                 updated = next_accumulator[start:stop]
                 np.add(accumulator[start:stop],value,out=updated)
-                slots[next_slot][start:stop] = updated
+                # Preserve every per-atom addition; persist only group boundaries.
             else:
                 slots[next_slot][start:stop] = slots[current][start:stop] + value
         # Double-buffered commit: an interrupted atom never alters the previous
         # accumulator. Its uncommitted target slot is overwritten on restart.
-        state = {"atoms_done": point + 1, "slot": next_slot}
-        atomic_json(marker, state)
+        checkpoint = not cached or (point + 1) % 64 == 0 or point + 1 == ctx.m
+        if checkpoint:
+            if cached:
+                next_slot = 1 - durable_slot
+                slots[next_slot][:] = next_accumulator
+            state = {"atoms_done": point + 1, "slot": next_slot}
+            atomic_json(marker, state)
+            durable_slot = next_slot
         if cached:
             accumulator, next_accumulator = next_accumulator, accumulator
     for start in range(0, ctx.n, ctx.chunk):

@@ -27,7 +27,7 @@ def context(path,data,budget):
 
 @pytest.fixture
 def data_and_correlation(monkeypatch):
-    data=np.random.default_rng(71).normal(size=(257,7,3)).cumsum(axis=0)
+    data=np.random.default_rng(71).normal(size=(257,129,3)).cumsum(axis=0)
     def correlation(ctx,point,mean,directory):
         a=data[:,point]-mean;prefix=np.empty(len(a)+1).view(_MemoryArray);prefix[0]=0;prefix[1:]=np.cumsum(np.einsum('ij,ij->i',a,a))
         dots=(fftconvolve(a,a[::-1],mode='full',axes=0).sum(axis=1)[len(a)-1:]+0).view(_MemoryArray)
@@ -43,9 +43,10 @@ def test_accumulator_read_reduction_keeps_bits_and_writes(tmp_path,data_and_corr
     disk=Writer();msd.calculate(context(tmp_path/'disk',data,len(data)*16*64-1),disk);disk_reads=len(reads);disk_writes=len(writes);reads.clear();writes.clear()
     cached=Writer();msd.calculate(context(tmp_path/'cached',data,128*1024**2),cached)
     assert np.array_equal(cached.values().view('u8'),disk.values().view('u8'))
-    assert len(reads)<disk_reads and len(writes)==disk_writes==data.shape[1]
+    assert len(reads)<disk_reads
+    assert disk_writes==data.shape[1] and len(writes)==(data.shape[1]+63)//64
 
-@pytest.mark.parametrize('fault_atom',[2,3])
+@pytest.mark.parametrize('fault_atom',[64,128])
 def test_both_committed_slots_resume_exactly(tmp_path,data_and_correlation,monkeypatch,fault_atom):
     data=data_and_correlation;reference=Writer();msd.calculate(context(tmp_path/'reference',data,len(data)*16*64-1),reference)
     ctx=context(tmp_path/'resume',data,128*1024**2);original=msd.atomic_json
@@ -55,7 +56,10 @@ def test_both_committed_slots_resume_exactly(tmp_path,data_and_correlation,monke
     with monkeypatch.context() as patch:
         patch.setattr(msd,'atomic_json',fail)
         with pytest.raises(RuntimeError,match='before accumulator commit'):msd.calculate(ctx,Writer())
-    committed=read_json(ctx.cache_path/'msd'/'state');assert committed['atoms_done']==fault_atom-1 and committed['slot']==(fault_atom-1)%2
+    if fault_atom==64:
+        assert not (ctx.cache_path/'msd'/'state').exists()
+    else:
+        committed=read_json(ctx.cache_path/'msd'/'state');assert committed['atoms_done']==64 and committed['slot']==1
     resumed=Writer();msd.calculate(ctx,resumed)
     assert np.array_equal(resumed.values().view('u8'),reference.values().view('u8'))
     assert read_json(ctx.cache_path/'msd'/'state')['atoms_done']==data.shape[1]

@@ -123,8 +123,13 @@ class ResultStore:
 
     @staticmethod
     def _verify_completed(path, completed):
-        if completed.get("schema") == 3:
-            from .datasets import verify_dataset
+        if completed.get("schema") in (3, 4, 5, 6):
+            if completed.get("schema") == 5:
+                from .virtual_rama_store import verify_dataset
+            elif completed.get("schema") in (4,6):
+                from .count_store import verify_dataset
+            else:
+                from .datasets import verify_dataset
             verify_dataset(path, completed)
             return
         if completed.get("schema") not in (1, 2):
@@ -187,7 +192,7 @@ class ResultStore:
                 con.execute("INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
                             [result_id, info["trajectory"], definition["representation"], definition["name"],
                              canonical(definition), info["start"], info["stop"], relative, completed["rows"]])
-                if completed.get("schema") == 3:
+                if completed.get("schema") in (3, 4, 5, 6):
                     from pathlib import Path
                     # Bound temporary memory and retain the single publication
                     # transaction, ordering, keys and conflict policy.
@@ -212,6 +217,12 @@ class ResultStore:
                 raise
 
     def dataset(self, trajectory, definition, *, layout):
+        if definition.name == 'ramachandran':
+            from .virtual_rama_store import RecipeWriter
+            return RecipeWriter(self, trajectory, definition, layout=layout)
+        if definition.name == 'sasa':
+            from .count_store import CountWriter
+            return CountWriter(self, trajectory, definition, layout=layout)
         from .datasets import DatasetWriter
         return DatasetWriter(self, trajectory, definition, layout=layout)
 

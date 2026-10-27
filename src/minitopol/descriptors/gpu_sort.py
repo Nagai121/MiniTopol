@@ -14,12 +14,14 @@ def sort_nearest(xyz,lengths,neighbors):
         distance[tid]=libdevice.dadd_rn(libdevice.dadd_rn(libdevice.dmul_rn(x,x),libdevice.dmul_rn(y,y)),libdevice.dmul_rn(z,z))
     else:distance[tid]=float('inf');ids[tid]=-1
     cuda.syncthreads()
+    size=1
+    while size<count:size*=2
     width=2
-    while width<=128:
+    while width<=size:
         stride=width//2
         while stride>0:
             partner=tid^stride
-            if partner>tid:
+            if tid<size and partner>tid:
                 reverse=(tid&width)!=0
                 swap=(distance[tid]<distance[partner]) if reverse else (distance[tid]>distance[partner])
                 if swap:

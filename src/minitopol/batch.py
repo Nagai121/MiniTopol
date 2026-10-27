@@ -49,7 +49,15 @@ def _validate_jobs(jobs):
             raise ValueError("estimated_work must be positive and finite")
         value["analysis"] = {"memory_mb": 128, **value["analysis"]}
         normalized.append((index, value, weight))
-    return sorted(normalized, key=lambda item: -item[2])
+    ordered=sorted(normalized,key=lambda item:-item[2])
+    # New combination: two small starters can complete independent CPU work
+    # while GPU-bound jobs hold permits; keep remainder descending work.
+    if len(ordered)>6:
+        small=sorted(ordered,key=lambda item:(item[2],item[0]))[:2]
+        chosen={item[0] for item in small}
+        large=[item for item in ordered if item[0] not in chosen]
+        return small+large[:4]+large[4:]
+    return ordered
 
 
 def _pipeline(job):
@@ -125,9 +133,11 @@ def run_pipelines(jobs, *, workers=6, native_threads=2, gpu_workers=2,
                   rss_limit_mb=4096):
     """Convert, annotate, restore optional TPR bonds and analyze each job.
 
-    Jobs must use separate Workspaces. They run in descending estimated_work
-    order, or input order when no estimate is provided. Exactly the largest
-    gpu_workers jobs may use CUDA; the remaining processes never initialize it.
+    Jobs must use separate Workspaces. More than six jobs start the two smallest
+    estimates first, followed by the remaining jobs in descending estimated_work.
+    Otherwise jobs use descending estimated_work, preserving ties in input order.
+    At most gpu_workers SASA stages hold GPU permits simultaneously. Each worker
+    releases its CUDA context before returning its permit and continuing CPU work.
     The function is synchronous. Failures retain partial data for normal resume.
     """
     for name, value in (("workers", workers), ("native_threads", native_threads), ("gpu_workers", gpu_workers)):
@@ -148,6 +158,7 @@ def run_pipelines(jobs, *, workers=6, native_threads=2, gpu_workers=2,
     reports = [None] * len(pending)
     gpu_jobs = {index for index, _, _ in pending[:gpu_workers]}
     peak = 0
+    lease_directory = Path(tempfile.mkdtemp(prefix="gpu-stages-", dir=Path(pending[0][1]["workspace"]).parent)) if gpu_workers else None
     try:
         # Sorted acquisition is deterministic, and timeout=0 never waits while
         # holding another job's lock. No two invocations share a destination.
@@ -171,7 +182,9 @@ def run_pipelines(jobs, *, workers=6, native_threads=2, gpu_workers=2,
                 env = dict(os.environ, NUMBA_NUM_THREADS=str(native_threads),
                            OMP_WAIT_POLICY="PASSIVE", PYTHONUNBUFFERED="1",
                            PYTHONPATH=str(Path(__file__).resolve().parents[1]) + os.pathsep + os.environ.get("PYTHONPATH", ""),
-                           MINITOPOL_SASA_DEVICE=("auto" if index in gpu_jobs and os.environ.get("MINITOPOL_SASA_DEVICE") != "cpu" else "cpu"))
+                           MINITOPOL_GPU_STAGE_DIR=str(lease_directory) if lease_directory else "",
+                           MINITOPOL_GPU_STAGE_SLOTS=str(gpu_workers),
+                           MINITOPOL_SASA_DEVICE=("auto" if gpu_workers and os.environ.get("MINITOPOL_SASA_DEVICE") != "cpu" else "cpu"))
                 child = subprocess.Popen([sys.executable, "-m", "minitopol.batch", "--worker", str(path)],
                                          env=env, stdin=subprocess.DEVNULL,
                                          stdout=log, stderr=subprocess.STDOUT)

@@ -188,6 +188,14 @@ def query_descriptor_rows(result_id: str, limit: int = 100) -> list[dict]:
         parent = con.execute("SELECT path FROM results WHERE id = ?", [result_id]).fetchone()
         if parent is None:
             raise LookupError("Unknown completed descriptor result ID")
+        marker = workspace.path.joinpath(parent[0]).with_suffix('.json')
+        from ..storage import read_json
+        if read_json(marker).get('schema') == 5:
+            from ..descriptors.virtual_rama_store import read_rows
+            return read_rows(workspace,parent[0],limit,connection=con)
+        if read_json(marker).get('schema') in (4,6):
+            from ..descriptors.count_store import read_rows
+            return read_rows(workspace, parent[0], limit)
         parts = con.execute(
             "SELECT path FROM result_parts WHERE result_id = ? ORDER BY part_index",
             [result_id],

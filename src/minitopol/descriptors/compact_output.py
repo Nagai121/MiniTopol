@@ -7,6 +7,9 @@ from .precision64 import backbone_frames64
 from .correlation import atom_correlation
 
 def _frames(ctx,name=None):
+    if name=='sasa':
+        # Native counts/bitplanes reserve64B per atom-frame in half budget.
+        return max(1,min(1024,(ctx.budget//2)//max(1,ctx.m*64)))
     # Conservative upper bound for simultaneous Python rows, Arrow tables,
     # concat metadata and coordinates; fallback to a single frame if needed.
     if name not in ('sasa','ramachandran','secondary_structure'):
@@ -58,7 +61,7 @@ def _backbone(name,module,ctx,writer):
 
 def _sasa(ctx,writer):
     from .sasa_batch import table
-    from .gpu_sasa_batch import evaluate_batch
+    from .gpu_sasa_batch import evaluate_counts
     batch=_frames(ctx,'sasa');radii=ctx.atomic_values('radii');values_list=[];frames=[];times=[];start=None
     for block in ctx.coordinate_blocks():
         saved=getattr(ctx,'_correlation_block',None)
@@ -68,7 +71,7 @@ def _sasa(ctx,writer):
         offset=0
         while offset<len(block.positions):
             frame=block.start+offset;first=(frame//batch)*batch;last=min(first+batch,ctx.n)
-            count=min(16,len(block.positions)-offset,last-block.start-offset)
+            count=min(32,len(block.positions)-offset,last-block.start-offset)
             # Conservative scheduling estimate only; evaluate_batch still checks
             # actual device shared memory, remaining working budget and VRAM.
             while count>1:
@@ -78,15 +81,20 @@ def _sasa(ctx,writer):
             stop=offset+count
             if writer.has(f'frames-{first}-{last}'):
                 offset=stop;continue
-            results=evaluate_batch(block.positions[offset:stop],radii,ctx.budget,available=available)
+            results=evaluate_counts(block.positions[offset:stop],radii,ctx.budget,available=available)
             if results is None:
                 results=[sasa._budgeted_sasa(xyz,radii,ctx.budget) if sasa._budgeted_sasa is not None else sasa.sasa_atoms(xyz,radii) for xyz in block.positions[offset:stop]]
+                from ..sasa_counts import factors
+                fac=factors(radii);floating=np.asarray(results,dtype='f8');estimate=np.rint(floating/fac*960)
+                if not np.isfinite(estimate).all() or estimate.min(initial=0)<0 or estimate.max(initial=0)>960:raise IOError('CPU accessibility count bound')
+                results=estimate.astype('<u2')
+                if not np.array_equal((results.astype('f8')/960*fac).view('u8'),floating.view('u8')):raise IOError('CPU accessibility conversion not exact')
             for local,values in enumerate(results):
                 frame=block.start+offset+local
                 if start is None:start=frame
                 values_list.append(values);frames.append(frame);times.append(block.time[offset+local])
                 if frame+1==last:
-                    writer.append(f'frames-{start}-{last}',table(ctx,frames,times,values_list))
+                    writer.append_native(f'frames-{start}-{last}',np.asarray(values_list,dtype='<u2'),np.asarray(frames,dtype='<i8'),np.asarray(times,dtype='<f8'))
                     values_list=[];frames=[];times=[];start=None
             offset=stop
     assert not values_list
@@ -111,7 +119,19 @@ def _time_correlation(ctx,writer):
             writer.append(f'{point}-done' if stop==ctx.n else f'{point}-{start}',table)
 
 def calculate(name,module,ctx,writer):
-    if name=='sasa':return _sasa(ctx,writer)
+    if name=='sasa':
+        from ..gpu_stage import lease
+        def prepare_while_waiting():
+            # Same existing bounded cache preparation, no extra worker/thread.
+            try:ctx.prepare_aligned()
+            except ValueError:
+                # Unsupported alignment remains a later descriptor failure;
+                # it must not change independent SASA's scientific support.
+                return
+            work=getattr(ctx,'_gpu_wait_work',None)
+            if work is not None:work()
+        with lease(on_wait=prepare_while_waiting):
+            return _sasa(ctx,writer)
     if name in ('ramachandran','secondary_structure'):return _backbone(name,module,ctx,writer)
     if name=='time_correlation':return _time_correlation(ctx,writer)
     return module.calculate(ctx,writer)

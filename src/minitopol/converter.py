@@ -11,6 +11,13 @@ import zarr
 from .storage import atomic_json, atomic_parquet, digest, fingerprint, read_json
 
 
+def position_chunk_frames(logical,atoms):
+    if type(logical) is not int or logical<1 or type(atoms) is not int or atoms<1:raise ValueError('Positive integer AGX logical/atom axes required')
+    cap=min(256,logical,(8*1024**2)//(atoms*12))
+    if cap<1:raise ValueError('One atom frame exceeds AGX8MiB working limit')
+    return max(d for d in range(1,cap+1) if logical%d==0)
+
+
 def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
             atom_elements=None, chunk_frames=None):
     """Convert all frames, resuming only at committed Zarr chunk boundaries.
@@ -50,7 +57,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
             # ~32 MiB of coordinate payload per write, capped for small systems.
             chunk_frames = max(1, min(1024, (32 * 1024 * 1024) // (len(selected) * 3 * 4)))
         options = {"source": source, "solvent_resnames": solvents,
-                   "elements_sha256": digest(elements.tolist()), "chunk_frames": chunk_frames, "format": 1}
+                   "elements_sha256": digest(elements.tolist()), "chunk_frames": chunk_frames, "format": 3, "position_codec": "AGX1-commit-divisor256"}
         identity = digest(options)
         trajectory_id = trajectory_id or identity[:32]
         path = workspace.trajectory_path(trajectory_id)
@@ -78,19 +85,12 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                     if manifest["committed_frames"]:
                         raise IOError("Committed trajectory array is missing")
                     if name == "positions":
-                        try:
-                            import pcodec
-                        except ImportError:
-                            group.create_array(name, shape=shape, chunks=chunks, dtype=dtype)
-                        else:
-                            from zarr.codecs import TransposeCodec
-                            from zarr.codecs.numcodecs import PCodec
-                            group.create_array(name, shape=shape, chunks=chunks, dtype=dtype,
-                                               filters=[TransposeCodec(order=(1, 2, 0))],
-                                               serializer=PCodec(level=12, delta_spec="try_consecutive", delta_encoding_order=1), compressors=[])
+                        from .agx_zarr import AGXCodec
+                        physical=position_chunk_frames(chunk_frames,atoms)
+                        group.create_array(name,shape=shape,chunks=(physical,atoms,3),dtype=dtype,compressors=[AGXCodec(atoms=atoms)])
                     else:
                         group.create_array(name, shape=shape, chunks=chunks, dtype=dtype)
-                elif group[name].shape != shape or group[name].chunks != chunks:
+                elif group[name].shape != shape or group[name].chunks != ((position_chunk_frames(chunk_frames,atoms),atoms,3) if name=="positions" else chunks):
                     raise IOError("Trajectory array schema does not match manifest")
             group.attrs.update({"representation": "A", "coordinate_unit": "angstrom", "time_unit": "ps"})
             ag = universe.atoms[selected]

@@ -7,6 +7,7 @@ periodic implementation. Scratch is verified before any result publication.
 """
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+from collections import deque
 import tempfile
 from pathlib import Path
 
@@ -35,9 +36,12 @@ def _state_table(values, times, n, schema):
 
 
 
-def _frame_contacts(xyz,box,atom_residue,allowed,budget):
+def _frame_contacts_original(xyz,box,atom_residue,allowed,budget):
     dimensions=box_dimensions(box)
-    if not np.all(dimensions[3:]==90.) or np.any(dimensions[:3]<1.) or np.any(dimensions[:3]>1e4):
+    if not np.all(dimensions[3:]==90.):
+        from .triclinic_contacts import frame_contacts
+        return frame_contacts(xyz,box,atom_residue,allowed,budget)
+    if np.any(dimensions[:3]<1.) or np.any(dimensions[:3]>1e4):
         raise UseOriginal()
     if xyz.dtype!=np.dtype('f4') or not np.isfinite(xyz).all() or np.any(np.abs(xyz)>1e6):
         raise UseOriginal()
@@ -55,9 +59,18 @@ def _frame_contacts(xyz,box,atom_residue,allowed,budget):
     # use the unmodified original coordinates and the conservative margin.
     wrapped=np.where(wrapped>=lengths,0.,wrapped)
     tree=cKDTree(wrapped,boxsize=lengths);radius=4.5+margin
-    pair_count=(int(tree.count_neighbors(tree,radius))-size)//2
-    if pair_count*128+size*256+count*count*9>budget//4:raise UseOriginal()
-    pairs=tree.query_pairs(radius,output_type='ndarray')
+    fixed=size*256+count*count*9
+    # Even a complete pair graph fits before further arrays are allocated.
+    # Reserve four output-sized buffers plus fixed data, and keep1/8 budget
+    # free for tree/native bookkeeping. Larger systems retain count preflight.
+    worst_pairs=size*(size-1)//2
+    if worst_pairs*16*4+fixed<=budget*7//8:
+        pairs=tree.query_pairs(radius,output_type='ndarray')
+        if len(pairs)*128+fixed>budget//4:raise UseOriginal()
+    else:
+        pair_count=(int(tree.count_neighbors(tree,radius))-size)//2
+        if pair_count*128+fixed>budget//4:raise UseOriginal()
+        pairs=tree.query_pairs(radius,output_type='ndarray')
     r=atom_residue[pairs[:,0]];s=atom_residue[pairs[:,1]]
     low=np.minimum(r,s);high=np.maximum(r,s);keep=allowed[low,high]
     pairs=pairs[keep];low=low[keep];high=high[keep]
@@ -70,18 +83,34 @@ def _frame_contacts(xyz,box,atom_residue,allowed,budget):
     if len(rr)*256>budget//8:raise UseOriginal()
     return rr,ss,minima[rr,ss]
 
+def _frame_contacts(xyz,box,atom_residue,allowed,budget):
+    from .fused_contacts_native import frame
+    return frame(xyz,box,atom_residue,allowed,budget)
+
+
 def _ordered_frames(positions,boxes,atom_residue,allowed,budget):
     workers=next((w for w in (4,2) if 9*w*len(allowed)**2+len(atom_residue)*256*w<=budget//8),1)
     if workers==1:
         for i,xyz in enumerate(positions):
             yield i,_frame_contacts(xyz,boxes[i],atom_residue,allowed,budget)
         return
+    # Reserve one of the old workers-sized result slots for the caller's
+    # current spool record. At most workers-1 future results are retained.
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        for start in range(0,len(positions),workers):
-            indices=range(start,min(start+workers,len(positions)))
-            results=list(executor.map(lambda i:_frame_contacts(positions[i],boxes[i],atom_residue,allowed,budget//workers),indices))
-            for offset,result in enumerate(results):
-                yield start+offset,result
+        pending=deque();next_index=0;window=max(1,workers-1)
+        def submit(i):return executor.submit(_frame_contacts,positions[i],boxes[i],atom_residue,allowed,budget//workers)
+        try:
+            while next_index<min(window,len(positions)):
+                pending.append((next_index,submit(next_index)));next_index+=1
+            while pending:
+                index,future=pending.popleft()
+                result=future.result()
+                yield index,result
+                del result,future
+                if next_index<len(positions):
+                    pending.append((next_index,submit(next_index)));next_index+=1
+        finally:
+            for _,future in pending:future.cancel()
 
 def calculate(ctx, writer):
     from .contacts import eligible, SCHEMA
@@ -143,7 +172,7 @@ def calculate(ctx, writer):
             for key, expected in hashes.items():
                 path = Path(folder) / str(key)
                 verify_scratch(path,files[key],lengths[key],expected.digest(),DTYPE.itemsize)
-            limit = max(4096, min(16384, ctx.budget // 16384))
+            limit = max(4096, min(65536, ctx.budget // 4096))
             for left in range(0, count, ctx.pair_block):
                 for right in range(left, count, ctx.pair_block):
                     key = f'frequency-{left}-{right}'

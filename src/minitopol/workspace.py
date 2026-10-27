@@ -76,12 +76,49 @@ class Workspace:
 
     def query_results(self, *, descriptor=None, trajectory=None, representation=None,
                       definition_id=None, columns=None, start=None, stop=None):
-        """Read published Parquet only; filtering/projection stays in DuckDB.
+        """Read published logical results, including native counts and recipes.
 
         Returns an Arrow table. Use narrow filters for large datasets.
         Frame filtering applies to per-frame rows; interval-valued descriptors
         should encode their interval explicitly in their result schema.
         """
+        if definition_id is not None:
+            import json
+            with self.catalog() as con:
+                row = con.execute("SELECT definition FROM descriptor_definitions WHERE id=?", [definition_id]).fetchone()
+            if row is None:
+                raise LookupError("Unknown descriptor definition")
+            defined_descriptor = json.loads(row[0])["name"]
+            if descriptor is None:
+                descriptor = defined_descriptor
+            elif descriptor != defined_descriptor:
+                raise LookupError("Descriptor and definition do not match")
+        if descriptor is None:
+            with self.catalog() as con:
+                names = con.execute("SELECT DISTINCT descriptor FROM results" +
+                                    (" WHERE trajectory=?" if trajectory is not None else "") +
+                                    " ORDER BY descriptor", [trajectory] if trajectory is not None else []).fetchall()
+            if not names:
+                raise LookupError("No completed descriptor results match the request")
+            tables = [self.query_results(descriptor=name, trajectory=trajectory,
+                                        representation=representation, columns=columns, start=start, stop=stop)
+                      for (name,) in names]
+            # Preserve DuckDB's UNION BY NAME coercion for heterogeneous
+            # descriptors (for example numeric values and classification text).
+            with duckdb.connect() as con:
+                for index, table in enumerate(tables):
+                    con.register(f"logical_{index}", table)
+                return con.sql(" UNION ALL BY NAME ".join(
+                    f"SELECT * FROM logical_{index}" for index in range(len(tables)))).to_arrow_table()
+        if descriptor in ('ramachandran', 'sasa') and representation not in (None, 'A'):
+            raise LookupError("No completed descriptor results match the representation")
+        if descriptor == 'ramachandran':
+            from .descriptors.virtual_rama_store import query
+            return query(self,trajectory=trajectory,definition_id=definition_id,columns=columns,start=start,stop=stop)
+        if descriptor == 'sasa':
+            from .descriptors.count_store import query
+            return query(self, trajectory=trajectory, definition_id=definition_id,
+                         columns=columns, start=start, stop=stop)
         clauses, args = [], []
         for field, value in (("descriptor", descriptor), ("trajectory", trajectory),
                              ("representation", representation)):

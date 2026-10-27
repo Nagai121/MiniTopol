@@ -6,6 +6,7 @@ import numpy as np
 import zarr
 
 from ..coordinates import fit_positions
+from ..fit_batch import fit_positions_batch
 from ..storage import atomic_json, read_json
 
 
@@ -65,8 +66,8 @@ def prepare_aligned_cache(ctx):
             if block.start != state["committed"]:
                 raise IOError("Coordinate cache commit boundary mismatch")
             aligned = np.empty_like(block.positions)
-            for index, frame in enumerate(block.positions):
-                aligned[index] = fit_positions(frame, reference, ca)
+            for index in range(0,len(block.positions),16):
+                aligned[index:index+16] = fit_positions_batch(block.positions[index:index+16],reference,ca)
             cache["positions"][block.start:block.stop] = aligned
             cache["time"][block.start:block.stop] = block.time
             atomic_json(checks / str(block.start), {"stop": block.stop, "sha256": block_checksum(aligned, block.time)})

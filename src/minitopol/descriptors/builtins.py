@@ -69,8 +69,11 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
     report = {"trajectory": trajectory, "source_identity": ctx.manifest["identity"],
               "definition_set": "A-1", "results": {}, "layout": ctx.layout}
     report_path = workspace.path / "analyses" / (digest([trajectory, ctx.parameters, names, ctx.layout]) + ".json")
+    execution_names=(["sasa"] if "sasa" in definitions else [])+[name for name in definitions if name!="sasa"]
+    report["execution_order"]=execution_names
     with ctx.cache_lock:
-        for name, definition in definitions.items():
+        def execute(name):
+            definition=definitions[name]
             try:
                 output_layout = ({**ctx.layout, "output_partitioning": "compact-v1"}
                                  if name in {"sasa", "ramachandran", "secondary_structure", "contacts", "time_correlation"}
@@ -97,6 +100,15 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
                 report["results"][name] = {"status": "failed", "definition_id": definition.identity,
                                           "reason": f"{type(error).__name__}: {error}"}
             atomic_json(report_path, report)
+        def prepare_independent_descriptor():
+            for name in ('ramachandran','secondary_structure'):
+                if name in definitions and name not in report['results']:
+                    execute(name)
+        ctx._gpu_wait_work=prepare_independent_descriptor
+        report['execution_policy']='sasa-first; GPUwait may complete independentRamachandran andSecondary beforeSASA'
+        for name in execution_names:
+            if name not in report['results']:
+                execute(name)
         report["status"] = "complete" if all(r["status"] == "complete" for r in report["results"].values()) else "incomplete"
         report["report_path"] = str(report_path)
         atomic_json(report_path, report)

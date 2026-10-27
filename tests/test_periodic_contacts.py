@@ -30,7 +30,38 @@ def test_frame_parallelism_keeps_exact_frame_order():
         for a,b in zip(result[:2],expected[:2]):assert np.array_equal(a,b)
         assert np.array_equal(result[2].view('u8'),expected[2].view('u8'))
 
-@pytest.mark.parametrize('case',['triclinic','nan','large','budget'])
+
+def test_triclinic_candidates_preserve_mda_all_pair_reference():
+    xyz=np.random.default_rng(21).uniform(-20,20,(31,3)).astype('f4')
+    box=np.array([[10.,0.,0.],[2.,11.,0.],[1.,2.,12.]],dtype='f4')
+    residue=np.arange(31)%5;allowed=np.triu(np.ones((5,5),bool),1)
+    expected=reference(xyz,box,residue,allowed)
+    actual=contacts._frame_contacts(xyz,box,residue,allowed,128*1024**2)
+    for left,right in zip(actual,expected):
+        np.testing.assert_array_equal(left.view('u8') if left.dtype==np.float64 else left,
+                                      right.view('u8') if right.dtype==np.float64 else right)
+
+
+@pytest.mark.parametrize('failure',[False,True])
+def test_ordered_window_joins_owned_threads_on_close_or_error(monkeypatch,failure):
+    from concurrent.futures import ThreadPoolExecutor
+    pools=[]
+    def pool(**options):
+        executor=ThreadPoolExecutor(**options);pools.append(executor);return executor
+    def frame(xyz,*args):
+        if failure:raise RuntimeError('injected contact failure')
+        return (np.array([0]),np.array([1]),np.array([1.]))
+    monkeypatch.setattr(contacts,'ThreadPoolExecutor',pool)
+    monkeypatch.setattr(contacts,'_frame_contacts',frame)
+    frames=contacts._ordered_frames(np.zeros((17,5,3),dtype='f4'),np.zeros((17,3,3)),np.arange(5),np.zeros((5,5),bool),128*1024**2)
+    if failure:
+        with pytest.raises(RuntimeError,match='injected contact failure'):next(frames)
+    else:
+        assert next(frames)[0]==0
+        frames.close()
+    assert pools and all(not thread.is_alive() for executor in pools for thread in executor._threads)
+
+@pytest.mark.parametrize('case',['nan','large','budget'])
 def test_unsupported_inputs_use_original(case):
     xyz=np.zeros((5,3),dtype='f4');box=np.diag([10.,10.,10.]).astype('f4');budget=128*1024**2
     if case=='triclinic':box[1,0]=2
