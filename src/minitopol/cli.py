@@ -29,6 +29,9 @@ def main(argv=None):
     atlas_import.add_argument("dataset")
     atlas_import.add_argument("--kind", choices=["analysis", "protein", "total"], default="analysis")
     atlas_import.add_argument("--solvent", nargs="*", default=["SOL", "WAT", "HOH"])
+    atlas_import.add_argument("--hydrogen-bonds", action="store_true",
+                              help="Extract H-bonds from full-atom XTC and TPR during A import")
+    atlas_import.add_argument("--nonperiodic-hbonds", action="store_true")
     importing = sub.add_parser("convert")
     importing.add_argument("gro")
     importing.add_argument("xtc")
@@ -36,6 +39,17 @@ def main(argv=None):
     importing.add_argument("--id")
     importing.add_argument("--chunk-frames", type=int, help="Default: adapt to atom count (~32 MiB)")
     importing.add_argument("--elements", help="JSON array with one explicit element per source atom")
+    importing.add_argument("--hbond-tpr", help="Optional TPR for same-pass hydrogen-bond extraction")
+    importing.add_argument("--hbond-mapping", help="JSON array with validated source-to-TPR atom indices")
+    importing.add_argument("--nonperiodic-hbonds", action="store_true")
+    backfill = sub.add_parser("hydrogen-bonds-backfill")
+    backfill.add_argument("trajectory")
+    backfill.add_argument("gro")
+    backfill.add_argument("xtc")
+    backfill.add_argument("tpr")
+    backfill.add_argument("mapping", help="JSON atom mapping")
+    backfill.add_argument("--solvent", nargs="*", required=True)
+    backfill.add_argument("--nonperiodic", action="store_true")
     register = sub.add_parser("register")
     register.add_argument("name")
     register.add_argument("definition", help="JSON with version, groups, descriptor_definitions")
@@ -86,15 +100,35 @@ def main(argv=None):
     elif args.command == "atlas-import":
         from .atlas import import_atlas
         result = import_atlas(workspace, args.dataset, args.kind,
-                              solvent_resnames=args.solvent)
+                              solvent_resnames=args.solvent,
+                              hydrogen_bonds=args.hydrogen_bonds,
+                              periodic=not args.nonperiodic_hbonds)
         print(json.dumps(result, indent=2))
         if result["status"] != "complete":
             raise SystemExit(1)
     elif args.command == "convert":
         from pathlib import Path
         elements = json.loads(Path(args.elements).read_text()) if args.elements else None
-        print(convert(workspace, args.gro, args.xtc, solvent_resnames=args.solvent,
-                      trajectory_id=args.id, atom_elements=elements, chunk_frames=args.chunk_frames))
+        if bool(args.hbond_tpr) != bool(args.hbond_mapping):
+            parser.error("--hbond-tpr and --hbond-mapping must be supplied together")
+        hb = {}
+        options = ({"tpr": args.hbond_tpr,
+                    "source_to_tpr": json.loads(Path(args.hbond_mapping).read_text()),
+                    "periodic": not args.nonperiodic_hbonds} if args.hbond_tpr else None)
+        tid = convert(workspace, args.gro, args.xtc, solvent_resnames=args.solvent,
+                      trajectory_id=args.id, atom_elements=elements, chunk_frames=args.chunk_frames,
+                      hydrogen_bonds=options, hbond_report=hb)
+        print(json.dumps({"trajectory": tid, "hydrogen_bonds": hb} if options else tid))
+        if options and hb["status"] != "complete":
+            raise SystemExit(1)
+    elif args.command == "hydrogen-bonds-backfill":
+        from pathlib import Path
+        from .hydrogen_bonds import reconstruct_hydrogen_bonds
+        report = reconstruct_hydrogen_bonds(
+            workspace, args.trajectory, args.gro, args.xtc, args.tpr,
+            json.loads(Path(args.mapping).read_text()), args.solvent,
+            periodic=not args.nonperiodic)
+        print(json.dumps(report))
     elif args.command == "register":
         from pathlib import Path
         definition = json.loads(Path(args.definition).read_text())

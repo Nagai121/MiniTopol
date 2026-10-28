@@ -126,6 +126,10 @@ class Registry:
         from .bond_store import BondStore
         return BondStore(self.workspace).info(trajectory)
 
+    def hydrogen_bond_info(self, trajectory):
+        from .hydrogen_bonds import hydrogen_bond_info
+        return hydrogen_bond_info(self.workspace, trajectory)
+
     def coordinate_blocks(self, trajectory, **kwargs):
         from .coordinates import coordinate_blocks
         return coordinate_blocks(self, trajectory, **kwargs)
