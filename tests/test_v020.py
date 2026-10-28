@@ -6,7 +6,7 @@ import pytest
 
 from minitopol import Workspace, convert
 from minitopol.atlas.client import AtlasClient
-from minitopol.atlas.ledger import DownloadLedger, migrate_atlas_sources
+from minitopol.atlas.ledger import DownloadLedger, migrate_atlas_sources, _write_rows
 from minitopol.system_metadata import publish_conditions, publish_molecules
 
 
@@ -37,14 +37,14 @@ def test_new_atlas_sources_and_legacy_ledger_migration(tmp_path):
     payload = archive_bytes()
     archive.write_bytes(payload)
     from minitopol.atlas.client import _sha256
-    DownloadLedger(ws).put({
+    _write_rows(ws.path / "atlas" / "downloads.tsv", [{
         "dataset": "1k5n_A", "kind": "analysis",
         "url": "https://www.dsimb.inserm.fr/ATLAS/api/ATLAS/analysis/1k5n_A",
         "archive": archive.relative_to(ws.path).as_posix(),
         "downloaded_at": "2026-10-28T00:00:00Z",
         "bytes": str(len(payload)), "sha256": _sha256(archive),
         "status": "complete", "error": "",
-    })
+    }])
     # Prior-version layout can be read before migration.
     assert DownloadLedger(ws).get("1k5n_A", "analysis")["sha256"] == _sha256(archive)
     assert migrate_atlas_sources(ws) == 1
@@ -126,7 +126,7 @@ def _tracked_legacy(ws, dataset="1k5n_A", kind="analysis", payload=None):
         "bytes": str(archive.stat().st_size),
         "sha256": _sha256(archive), "status": "complete", "error": "",
     }
-    DownloadLedger(ws).put(row)
+    _write_rows(ws.path / "atlas" / "downloads.tsv", [row])
     return directory, archive, row
 
 
