@@ -42,6 +42,8 @@ class Workspace:
             # Independent bond graph catalog; no change to A/C or result schemas.
             con.execute("""CREATE TABLE IF NOT EXISTS bond_graphs(
                 trajectory VARCHAR PRIMARY KEY, info VARCHAR NOT NULL)""")
+            con.execute("""CREATE TABLE IF NOT EXISTS hydrogen_bond_sets(
+                trajectory VARCHAR PRIMARY KEY, info VARCHAR NOT NULL)""")
 
     @staticmethod
     def default_path():

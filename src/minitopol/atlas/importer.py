@@ -7,7 +7,8 @@ from ..descriptors.bond_reconstruction import reconstruct_bonds
 
 
 def import_atlas(workspace, dataset: str, kind: str = "analysis", *,
-                 solvent_resnames=("SOL", "WAT", "HOH"), chunk_frames=None) -> dict:
+                 solvent_resnames=("SOL", "WAT", "HOH"), chunk_frames=None,
+                 hydrogen_bonds=False, periodic=True) -> dict:
     plans = check_atlas(workspace, dataset, kind)
     results = []
     for plan in plans:
@@ -16,16 +17,28 @@ def import_atlas(workspace, dataset: str, kind: str = "analysis", *,
                             "bonds": "unavailable", "reason": plan["error"]})
             continue
         identifier = f'atlas-{plan["dataset"]}-{plan["kind"]}-{plan["replica"]}'
+        hb = {}
+        hb_options = ({"tpr": plan["tpr"], "source_to_tpr": plan["source_to_tpr"],
+                       "periodic": periodic}
+                      if hydrogen_bonds and plan["tpr"] and not plan["bond_error"] else None)
         try:
             tid = convert(workspace, plan["topology"], plan["xtc"],
                           solvent_resnames=solvent_resnames, trajectory_id=identifier,
-                          chunk_frames=chunk_frames)
+                          chunk_frames=chunk_frames,
+                          hydrogen_bonds=hb_options, hbond_report=hb)
         except Exception as error:
             results.append({"replica": plan["replica"], "A": "failed",
                             "bonds": "unavailable",
                             "reason": f"{type(error).__name__}: {error}"})
             continue
         result = {"replica": plan["replica"], "trajectory_id": tid, "A": "complete"}
+        if hydrogen_bonds:
+            if hb_options is None:
+                result["hydrogen_bonds"] = "unavailable"
+            else:
+                result["hydrogen_bonds"] = hb["status"]
+                if hb["status"] != "complete":
+                    result["hydrogen_bond_error"] = hb.get("error")
         if plan["tpr"] is None:
             result["bonds"] = "unavailable"
         elif plan["bond_error"]:
@@ -41,5 +54,6 @@ def import_atlas(workspace, dataset: str, kind: str = "analysis", *,
     return {"dataset": plans[0]["dataset"], "kind": plans[0]["kind"],
             "status": "complete" if all(r["A"] == "complete"
                                         and r["bonds"] in ("complete", "unavailable")
+                                        and (not hydrogen_bonds or r.get("hydrogen_bonds") in ("complete", "unavailable"))
                                         for r in results) else "partial",
             "replicas": results}

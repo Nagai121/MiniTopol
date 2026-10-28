@@ -15,6 +15,7 @@ Python APIの引数、CLIの `--workspace`、環境変数 `MINITOPOL_WORKSPACE` 
 | `trajectories/<id>/manifest.json` | 入力ハッシュ、選択条件、フレーム数、コミット済み境界、完了状態、単位 |
 | `trajectories/<id>/bonds.parquet` | 追加の静的結合表現。Aの原子番号 `point_i < point_j` の無向エッジ。0本も許可 |
 | `trajectories/<id>/bonds.json` | 結合表現単独の出典・ハッシュ・完了記録 |
+| `trajectories/<id>/hydrogen_bonds/` | 明示的に有効化した場合の動的水素結合3分類。原子表、分割Parquet、進捗・完了記録。Aとは独立 |
 | `descriptors/<name>/<trajectory>/<representation>/<result-id>.parquet` | 検証後の結果と定義メタデータ |
 | 同名 `.json` | Parquetの完了記録。DB登録前に停止した場合の復旧元 |
 | `descriptors/<name>/<trajectory>/A/<result-id>/part-*.parquet` | 10記述子の分割出力。全パート完成後に正式登録 |

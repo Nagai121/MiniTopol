@@ -206,6 +206,26 @@ def query_descriptor_rows(result_id: str, limit: int = 100) -> list[dict]:
         relation = con.read_parquet(files, union_by_name=True, hive_partitioning=False)
         return relation.limit(limit).to_arrow_table().to_pylist()
 
+@mcp.tool()
+def get_hydrogen_bond_info(trajectory: str) -> dict:
+    """Verify and summarize independently stored 3-category H-bond events."""
+    from ..hydrogen_bonds import hydrogen_bond_info
+    result = hydrogen_bond_info(Workspace(), trajectory)
+    if result is None:
+        raise LookupError("No completed hydrogen-bond dataset")
+    return result
+
+
+@mcp.tool()
+def query_hydrogen_bond_events(trajectory: str, category: str,
+                               start: int = 0, stop: int | None = None,
+                               limit: int = 100) -> list[dict]:
+    """Read verified completed H-bond events (max 1000) for one category."""
+    from ..hydrogen_bonds import hydrogen_bond_events
+    return hydrogen_bond_events(Workspace(), trajectory, category, start=start, stop=stop,
+                                limit=limit)
+
+
 def main():
     mcp.run(transport="stdio")
 
