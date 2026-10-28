@@ -4,6 +4,7 @@ from __future__ import annotations
 from .checker import check_atlas
 from ..converter import convert
 from ..descriptors.bond_reconstruction import reconstruct_bonds
+from ..system_metadata import publish_conditions, publish_molecules
 
 
 def import_atlas(workspace, dataset: str, kind: str = "analysis", *,
@@ -32,6 +33,18 @@ def import_atlas(workspace, dataset: str, kind: str = "analysis", *,
                             "reason": f"{type(error).__name__}: {error}"})
             continue
         result = {"replica": plan["replica"], "trajectory_id": tid, "A": "complete"}
+        # System extraction is independent of A and the bond graph.
+        try:
+            valid_tpr = plan["tpr"] if not plan["bond_error"] else None
+            publish_conditions(workspace, tid, tpr=valid_tpr)
+            if valid_tpr and plan["source_to_tpr"] is not None:
+                result["system"] = publish_molecules(
+                    workspace, tid, valid_tpr, plan["source_to_tpr"])
+            else:
+                result["system"] = "conditions_only"
+        except Exception as error:
+            result["system"] = "failed"
+            result["system_error"] = f"{type(error).__name__}: {error}"
         if hydrogen_bonds:
             if hb_options is None:
                 result["hydrogen_bonds"] = "unavailable"

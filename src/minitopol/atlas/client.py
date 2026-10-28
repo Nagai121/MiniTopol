@@ -19,6 +19,7 @@ import stat
 import zlib
 
 from .ledger import DownloadLedger
+from .paths import source_directory
 
 BASE_URL = "https://www.dsimb.inserm.fr/ATLAS/api"
 DATASET = re.compile(r"[A-Za-z0-9]{4}_[A-Za-z0-9]")
@@ -139,7 +140,7 @@ class AtlasClient:
     def _request(self, url: str, *, accept: str):
         req = Request(url, headers={
             "Accept": accept,
-            "User-Agent": "MiniTopol/0.1 (ATLAS data client)",
+            "User-Agent": "MiniTopol/0.2 (ATLAS data client)",
         })
         return self._opener(req, timeout=self.timeout)
 
@@ -165,7 +166,7 @@ class AtlasClient:
         dataset, kind = _dataset_id(dataset), _kind(kind)
         url = f"{BASE_URL}/ATLAS/{kind}/{dataset}"
         trajectory_id = f"atlas-{dataset}-{kind}"
-        directory = workspace.trajectory_path(trajectory_id) / "source"
+        directory = source_directory(workspace, dataset, kind)
         archive = directory / f"{dataset}_{kind}.zip"
         relative = archive.relative_to(workspace.path).as_posix()
         ledger = DownloadLedger(workspace)

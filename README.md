@@ -94,3 +94,25 @@ CLI、注釈JSON、出力列、中断再開と計算資源については [docs/
 ## ATLASとMCP
 
 ATLASからのメタデータ取得・ZIPダウンロード・簡易TSV台帳、構成チェッカー、Replica別のA変換、TPR由来の独立した結合表現を利用できます。`atlas-check` / `atlas-import` またはMCP経由で明示的に実行します。既存のダウンロード操作だけでは変換は始まりません。詳細は[ATLAS・MCPの使い方](docs/atlas-mcp.md)を参照してください。
+
+## v0.2.0: 元データと静的な系情報
+
+ATLASの元データは `BaseTraj_Workspace/sources/ATLAS/<dataset>-<kind>/`、
+ダウンロード台帳は `sources/ATLAS/downloads.tsv` に保存します。
+既存Workspaceは旧配置の読み出しが可能です。検証付きの明示的な移行は
+`python -m minitopol migrate-atlas-sources` で実行します。mainの既存データを
+自動移動・削除しません。
+
+変換後の軌道ごとに `system_conditions.json` を作成し、取得可能な
+シミュレーション条件を保存します。値が不明な項目はnullです。TPRと検証済み
+原子対応があれば、元の全系について分子・原子タイプ・部分電荷・分子所属を
+`system/molecules.parquet` と `system/atom_properties.parquet` に保存できます。
+
+既存の軌道へ追加情報を記録する例：
+
+```bash
+python -m minitopol system-metadata <trajectory-id> --mdp input.mdp
+python -m minitopol system-metadata <trajectory-id> --tpr input.tpr --mapping mapping.json
+```
+
+水素結合PR #7の機能を前提とした開発ブランチです。

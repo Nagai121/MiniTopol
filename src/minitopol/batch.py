@@ -86,10 +86,20 @@ def _pipeline(job):
     if "tpr" in job:
         from .descriptors.bond_reconstruction import reconstruct_bonds
         edges = reconstruct_bonds(workspace, trajectory, job["tpr"], job["source_to_tpr"])
+    from .system_metadata import publish_conditions, publish_molecules
+    system_info = None
+    try:
+        publish_conditions(workspace, trajectory, tpr=job.get("tpr"))
+        if "tpr" in job:
+            system_info = publish_molecules(workspace, trajectory, job["tpr"],
+                                            job["source_to_tpr"])
+    except Exception as exc:
+        # Optional TPR metadata must not invalidate completed A/descriptors.
+        system_info = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     report = analyze(workspace, trajectory, **job["analysis"])
     status = "complete" if report["status"] == "complete" and hb.get("status", "complete") == "complete" else "incomplete"
     return {"status": status, "workspace": str(workspace.path),
-            "trajectory": trajectory, "bond_edges": edges,
+            "trajectory": trajectory, "bond_edges": edges, "system": system_info,
             "hydrogen_bonds": hb if source is not None else "not_requested",
             "analysis": report}
 

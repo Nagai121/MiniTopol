@@ -180,6 +180,8 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                         identity=hb_identity, error=hb_error)
                 elif hb_error is not None:
                     raise RuntimeError("A conversion completed, hydrogen bonds failed: " + hb_error)
+        from .system_metadata import publish_conditions
+        publish_conditions(workspace, trajectory_id)
         return trajectory_id
 
 

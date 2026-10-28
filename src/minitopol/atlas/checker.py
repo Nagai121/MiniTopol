@@ -15,6 +15,7 @@ from MDAnalysis.coordinates.XTC import XTCReader
 
 from .client import _dataset_id, _kind, _sha256, _crc32
 from .ledger import DownloadLedger
+from .paths import source_directory
 
 _REPLICA = re.compile(r"(?:^|[_.-])R([1-9][0-9]*)(?=$|[_.-])", re.IGNORECASE)
 _SUFFIXES = {".gro", ".pdb", ".tpr", ".xtc"}
@@ -93,7 +94,7 @@ def _verify_acquisition(workspace, dataset: str, kind: str, files: list[Path]) -
     'manual' and cannot be mistaken for provider-verified downloads.
     """
     record = DownloadLedger(workspace).get(dataset, kind)
-    directory = workspace.trajectory_path(f"atlas-{dataset}-{kind}") / "source"
+    directory = source_directory(workspace, dataset, kind)
     archive = directory / f"{dataset}_{kind}.zip"
     if record is None:
         if archive.exists():
@@ -125,7 +126,7 @@ def _verify_acquisition(workspace, dataset: str, kind: str, files: list[Path]) -
 def check_atlas(workspace, dataset: str, kind: str = "analysis") -> list[dict]:
     """Return checker-validated independent plans or explicit per-replica errors."""
     dataset, kind = _dataset_id(dataset), _kind(kind)
-    source = workspace.trajectory_path(f"atlas-{dataset}-{kind}") / "source"
+    source = source_directory(workspace, dataset, kind)
     if not source.is_dir():
         raise FileNotFoundError(f"No extracted ATLAS inputs in {source}")
     files = sorted(p for p in source.iterdir() if p.suffix.lower() in _SUFFIXES)
