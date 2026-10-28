@@ -37,7 +37,8 @@ def test_atlas_download_ledger_and_idempotence(tmp_path):
     assert len(result["files"]) == 2
     assert result["trajectory_id"] == "atlas-1k5n_A-analysis"
     assert result["sha256"]
-    assert result["archive"].endswith("/source/1k5n_A_analysis.zip") or result["archive"].endswith("\\source\\1k5n_A_analysis.zip")
+    from pathlib import Path
+    assert Path(result["archive"]) == workspace.path / "sources" / "ATLAS" / "1k5n_A-analysis" / "1k5n_A_analysis.zip"
     records = DownloadLedger(workspace).list()
     assert len(records) == 1 and records[0]["status"] == "complete"
     assert records[0]["sha256"] == result["sha256"]
