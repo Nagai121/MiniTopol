@@ -99,6 +99,15 @@ or result tables are deliberately not dumped through MCP tools.
 No API keys are needed for the public ATLAS endpoints. Local MCP clients
 still receive filesystem access permitted to their OS user.
 
+## Optional hydrogen-bond event layer
+
+The optional `--hydrogen-bonds` ATLAS import switch extracts three disjoint
+hydrogen-bond categories from original full-atom source frames and an explicitly
+validated source-to-TPR atom mapping. The default imports remain unchanged.
+Events are sparse Parquet+Zstd with checksums and an independent complete marker.
+See [hydrogen-bonds.md](hydrogen-bonds.md) for the operational chemistry,
+distance/angle selection, source requirements, and independent recovery.
+
 ## Independent bond graph
 
 `BondStore` and `Registry.bonds(trajectory)` expose a verified Parquet edge table

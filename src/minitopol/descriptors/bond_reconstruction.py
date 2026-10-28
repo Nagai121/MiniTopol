@@ -21,16 +21,26 @@ _CHEMICAL = frozenset({
 })
 
 
-def _edges_in_ilists(ilists):
+def _edges_in_ilists(ilists, *, include_settle=False):
     """Return molecule-local chemical atom pairs from typed TPR interactions."""
     from MDAnalysis.topology.tpr.obj import InteractionKind
 
     edges = set()
     for ilist in ilists:
         name = ilist.ik[0]
-        if not ilist.nr or name not in _CHEMICAL:
+        if not ilist.nr or (name not in _CHEMICAL and not (include_settle and name == "SETTLE")):
             continue
         interaction = InteractionKind(*ilist.ik)
+        if name == "SETTLE":
+            if interaction.natoms != 3:
+                raise ValueError("Unexpected SETTLE atom layout")
+            for group in interaction.process(ilist.iatoms):
+                o, h1, h2 = map(int, group)
+                if len({o, h1, h2}) != 3:
+                    raise ValueError("Invalid SETTLE atom triplet")
+                edges.add(tuple(sorted((o, h1))))
+                edges.add(tuple(sorted((o, h2))))
+            continue
         if interaction.natoms != 2:
             raise ValueError(f"Unrecognized connectivity arity: {name}")
         for pair in interaction.process(ilist.iatoms):
@@ -41,7 +51,7 @@ def _edges_in_ilists(ilists):
     return sorted(edges)
 
 
-def _covalent_edges_from_tpr(tpr):
+def _covalent_edges_from_tpr(tpr, *, include_settle=False, molecule_ids=False):
     """Decode typed TPR interactions without treating restraints as bonds.
 
     GROMACS SETTLE (water O-H) is omitted: A excludes hydrogens and solvent,
@@ -70,7 +80,7 @@ def _covalent_edges_from_tpr(tpr):
         utils.do_symstr(data, symtab)
         atoms = utils.do_atoms(data, symtab, th.fver)
         ilists = utils.do_ilists(data, th.fver)
-        edges = _edges_in_ilists(ilists)
+        edges = _edges_in_ilists(ilists, include_settle=include_settle)
         if any(a < 0 or b >= atoms.nr for a, b in edges):
             raise ValueError("TPR contains out-of-range bond indices")
         utils.do_block(data)
@@ -78,6 +88,8 @@ def _covalent_edges_from_tpr(tpr):
         moltypes.append((atoms.nr, edges))
     count = 0
     all_edges = []
+    molecules = []
+    ordinal = 0
     for _ in range(data.unpack_int()):
         block = utils.do_molblock(data)
         atoms_per_molecule, edges = moltypes[block.molb_type]
@@ -85,8 +97,11 @@ def _covalent_edges_from_tpr(tpr):
             raise ValueError("TPR molecule block atom count mismatch")
         for _ in range(block.molb_nmol):
             all_edges.extend((count + a, count + b) for a, b in edges)
+            if molecule_ids:
+                molecules.extend([ordinal] * atoms_per_molecule)
+            ordinal += 1
             count += atoms_per_molecule
-    return count, all_edges
+    return (count, all_edges, molecules) if molecule_ids else (count, all_edges)
 
 
 def reconstruct_bonds(workspace, trajectory: str, tpr: str,
