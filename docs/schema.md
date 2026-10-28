@@ -98,8 +98,14 @@ additional DOI/version/license/learning-use database exists.
 
 Older Workspace layouts remain readable. Run
 `minitopol migrate-atlas-sources` to **explicitly** move tracked source folders
-and the ledger; migration checks recorded sizes and SHA256, refuses collisions,
-does not overwrite files, and leaves converted trajectories/descriptors alone.
+and the ledger. The migration checks recorded archive sizes/SHA256, verifies
+processed manifest source fingerprints, and rewrites only the GRO/PDB/XTC
+absolute source paths in `manifest.json`; it preserves the source identity,
+A.zarr, descriptors and DuckDB catalog. It refuses filename/ledger collisions
+instead of overwriting, and supports restart after partially moved folders or
+publication of a second ledger. Conflicting old/new ledger rows require manual
+reconciliation. A common `atlas-sources` lock excludes concurrent ATLAS
+download/check/import operations for the duration of the migration.
 Manually staged old folders without a download ledger are readable but not
 automatically moved.
 
@@ -128,3 +134,7 @@ second trajectory copy. H-bond and A-1 scientific definitions are unchanged.
 Use `minitopol system-metadata <trajectory> [--tpr <tpr> --mapping <json>]
 [--mdp <mdp>] [--conditions <json>]` to backfill existing A trajectories.
 These optional attributes are not required for successful core A conversion.
+
+ATLAS import reports `status: partial` if a parseable TPR exists but
+molecular system extraction fails, even if the A and bond calculations succeed.
+A missing TPR is allowed and produces `system: conditions_only`.

@@ -156,6 +156,13 @@ class AtlasClient:
 
     def download(self, workspace, dataset: str, kind: str = "analysis", *,
                  extract: bool = True) -> dict:
+        # Protect the entire acquisition, including path discovery, against
+        # an explicit source-directory migration.
+        with workspace.lock("atlas-sources"):
+            return self._download_locked(workspace, dataset, kind, extract=extract)
+
+    def _download_locked(self, workspace, dataset: str, kind: str = "analysis", *,
+                         extract: bool = True) -> dict:
         """Download and verify an ATLAS ZIP, optionally extracting input files.
 
         "complete" in the TSV means the requested download/extraction finished.

@@ -124,6 +124,12 @@ def _verify_acquisition(workspace, dataset: str, kind: str, files: list[Path]) -
 
 
 def check_atlas(workspace, dataset: str, kind: str = "analysis") -> list[dict]:
+    """Check source data while holding the migration/extraction exclusion lock."""
+    with workspace.lock("atlas-sources"):
+        return _check_atlas_unlocked(workspace, dataset, kind)
+
+
+def _check_atlas_unlocked(workspace, dataset: str, kind: str = "analysis") -> list[dict]:
     """Return checker-validated independent plans or explicit per-replica errors."""
     dataset, kind = _dataset_id(dataset), _kind(kind)
     source = source_directory(workspace, dataset, kind)

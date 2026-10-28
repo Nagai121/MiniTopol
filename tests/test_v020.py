@@ -109,3 +109,116 @@ def test_tpr_molecule_tables_are_full_system_not_just_a(tmp_path, trajectory, mo
     assert atom_data["a_point"] == [0, 1, None, None, None, None]
     assert mol_data["molecule_type"] == ["PRO", "SOL"]
     assert publish_molecules(ws, tid, tpr, list(range(6))) == result
+
+
+def _tracked_legacy(ws, dataset="1k5n_A", kind="analysis", payload=None):
+    """Create a v0.1 source archive and its original nine-column ledger."""
+    from minitopol.atlas.client import _sha256
+    directory = ws.trajectory_path(f"atlas-{dataset}-{kind}") / "source"
+    directory.mkdir(parents=True, exist_ok=True)
+    archive = directory / f"{dataset}_{kind}.zip"
+    archive.write_bytes(payload if payload is not None else archive_bytes())
+    row = {
+        "dataset": dataset, "kind": kind,
+        "url": f"https://www.dsimb.inserm.fr/ATLAS/api/ATLAS/{kind}/{dataset}",
+        "archive": archive.relative_to(ws.path).as_posix(),
+        "downloaded_at": "2026-10-28T00:00:00Z",
+        "bytes": str(archive.stat().st_size),
+        "sha256": _sha256(archive), "status": "complete", "error": "",
+    }
+    DownloadLedger(ws).put(row)
+    return directory, archive, row
+
+
+def test_migration_relinks_converter_sources_without_changing_identity(tmp_path, trajectory):
+    import shutil
+    from minitopol.storage import read_json
+    ws = Workspace(tmp_path / "ws")
+    source, archive, row = _tracked_legacy(ws)
+    shutil.copyfile(trajectory[0], source / "1k5n_A_R1.gro")
+    shutil.copyfile(trajectory[1], source / "1k5n_A_R1.xtc")
+    tid = convert(ws, source / "1k5n_A_R1.gro",
+                  source / "1k5n_A_R1.xtc", trajectory_id="atlas-1k5n_A-analysis-R1",
+                  solvent_resnames=["SOL"])
+    manifest_path = ws.trajectory_path(tid) / "manifest.json"
+    original = read_json(manifest_path)
+    a_manifest = ws.trajectory_path(tid) / "A.zarr"
+    assert migrate_atlas_sources(ws) == 1
+    now = read_json(manifest_path)
+    new = ws.path / "sources" / "ATLAS" / "1k5n_A-analysis"
+    assert now["xtc_path"] == str((new / "1k5n_A_R1.xtc").resolve())
+    assert now["gro_path"] == str((new / "1k5n_A_R1.gro").resolve())
+    assert now["identity"] == original["identity"]
+    assert now["options"] == original["options"]
+    assert a_manifest.is_dir()
+    assert convert(ws, new / "1k5n_A_R1.gro", new / "1k5n_A_R1.xtc",
+                   trajectory_id=tid, solvent_resnames=["SOL"]) == tid
+    assert migrate_atlas_sources(ws) == 0
+
+
+def test_migration_resumes_if_interrupted_after_sources_were_moved(tmp_path, monkeypatch):
+    import minitopol.atlas.ledger as ledger
+    ws = Workspace(tmp_path / "ws")
+    source, archive, row = _tracked_legacy(ws)
+    initial = ledger._relink_manifests
+    def interrupted(*args):
+        raise OSError("simulated crash after directory rename")
+    with monkeypatch.context() as patch:
+        patch.setattr(ledger, "_relink_manifests", interrupted)
+        with pytest.raises(OSError, match="simulated crash"):
+            migrate_atlas_sources(ws)
+    target = ws.path / "sources" / "ATLAS" / "1k5n_A-analysis"
+    assert target.is_dir() and not source.exists()
+    assert (ws.path / "atlas" / "downloads.tsv").exists()
+    assert migrate_atlas_sources(ws) == 0
+    assert (target / archive.name).is_file()
+    assert DownloadLedger(ws).get("1k5n_A", "analysis")["archive"].startswith("sources/")
+
+
+def test_migration_reconciles_two_identical_ledgers(tmp_path):
+    import minitopol.atlas.ledger as ledger
+    ws = Workspace(tmp_path / "ws")
+    source, archive, old = _tracked_legacy(ws)
+    modern = ws.path / "sources" / "ATLAS" / "downloads.tsv"
+    new = dict(old, archive="sources/ATLAS/1k5n_A-analysis/1k5n_A_analysis.zip")
+    ledger._write_rows(modern, [new])
+    with pytest.raises(RuntimeError, match="Both ATLAS ledgers"):
+        DownloadLedger(ws)
+    assert migrate_atlas_sources(ws) == 1
+    assert not (ws.path / "atlas" / "downloads.tsv").exists()
+    assert DownloadLedger(ws).get("1k5n_A", "analysis")["archive"] == new["archive"]
+
+
+def test_migration_never_overwrites_conflicting_ledgers(tmp_path):
+    import minitopol.atlas.ledger as ledger
+    ws = Workspace(tmp_path / "ws")
+    source, archive, old = _tracked_legacy(ws)
+    modern = ws.path / "sources" / "ATLAS" / "downloads.tsv"
+    newer = dict(old, archive="sources/ATLAS/1k5n_A-analysis/1k5n_A_analysis.zip",
+                 sha256="conflicting")
+    ledger._write_rows(modern, [newer])
+    with pytest.raises(ValueError, match="Conflicting old/new"):
+        migrate_atlas_sources(ws)
+    assert source.is_dir() and archive.is_file()
+    assert (ws.path / "atlas" / "downloads.tsv").exists()
+    assert modern.is_file()
+
+
+def test_atlas_download_waits_for_migration_lock(tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    ws = Workspace(tmp_path / "ws")
+    client = AtlasClient(opener=lambda req, timeout: Response(archive_bytes()))
+    entered = threading.Event()
+    original = client._download_locked
+    def tracked(*args, **kwargs):
+        entered.set()
+        return original(*args, **kwargs)
+    client._download_locked = tracked
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with ws.lock("atlas-sources"):
+            future = pool.submit(client.download, ws, "1k5n_A", extract=False)
+            assert not entered.wait(0.15)
+        result = future.result(timeout=15)
+    assert entered.is_set()
+    assert result["status"] == "downloaded"

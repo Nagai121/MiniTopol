@@ -1,7 +1,7 @@
 """Import extracted ATLAS replicas through validated plans and existing A converter."""
 from __future__ import annotations
 
-from .checker import check_atlas
+from .checker import _check_atlas_unlocked
 from ..converter import convert
 from ..descriptors.bond_reconstruction import reconstruct_bonds
 from ..system_metadata import publish_conditions, publish_molecules
@@ -10,7 +10,18 @@ from ..system_metadata import publish_conditions, publish_molecules
 def import_atlas(workspace, dataset: str, kind: str = "analysis", *,
                  solvent_resnames=("SOL", "WAT", "HOH"), chunk_frames=None,
                  hydrogen_bonds=False, periodic=True) -> dict:
-    plans = check_atlas(workspace, dataset, kind)
+    # Keep ATLAS source paths stable from validation through final A/HB import.
+    with workspace.lock("atlas-sources"):
+        return _import_atlas_unlocked(
+            workspace, dataset, kind, solvent_resnames=solvent_resnames,
+            chunk_frames=chunk_frames, hydrogen_bonds=hydrogen_bonds,
+            periodic=periodic)
+
+
+def _import_atlas_unlocked(workspace, dataset: str, kind: str = "analysis", *,
+                           solvent_resnames=("SOL", "WAT", "HOH"), chunk_frames=None,
+                           hydrogen_bonds=False, periodic=True) -> dict:
+    plans = _check_atlas_unlocked(workspace, dataset, kind)
     results = []
     for plan in plans:
         if "error" in plan:
@@ -67,6 +78,7 @@ def import_atlas(workspace, dataset: str, kind: str = "analysis", *,
     return {"dataset": plans[0]["dataset"], "kind": plans[0]["kind"],
             "status": "complete" if all(r["A"] == "complete"
                                         and r["bonds"] in ("complete", "unavailable")
+                                        and r.get("system") != "failed"
                                         and (not hydrogen_bonds or r.get("hydrogen_bonds") in ("complete", "unavailable"))
                                         for r in results) else "partial",
             "replicas": results}
