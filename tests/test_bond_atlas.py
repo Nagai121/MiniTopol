@@ -44,6 +44,11 @@ def _fake_tpr(monkeypatch):
     monkeypatch.setattr(checker, "_labels", labels)
     monkeypatch.setattr(bond_reconstruction, "_covalent_edges_from_tpr",
                         lambda path: (6, [(0, 1), (1, 2), (3, 4), (3, 5)]))
+    # This bond-only test uses a dummy TPR, not a parseable molecular system.
+    # Keep the molecule-extraction contract independently covered in test_v020.
+    import minitopol.atlas.importer as importer
+    monkeypatch.setattr(importer, "publish_molecules",
+                        lambda workspace, tid, tpr, mapping: {"molecules": 2, "atoms": 6})
 
 
 def test_unique_subsequence_requires_unambiguous_order():
@@ -250,3 +255,21 @@ def test_repeated_residue_names_are_distinguished(tmp_path):
     u.atoms.write(str(pdb))
     labels = _labels(pdb)
     assert labels[0] != labels[2]
+
+def test_system_extraction_failure_is_partial_not_complete(tmp_path, trajectory, monkeypatch):
+    import minitopol.atlas.importer as importer
+    workspace = Workspace(tmp_path / "ws")
+    _fake_tpr(monkeypatch)
+    directory, stem = _source(workspace)
+    shutil.copyfile(trajectory[0], directory / (stem + ".gro"))
+    shutil.copyfile(trajectory[1], directory / (stem + ".xtc"))
+    (directory / (stem + ".tpr")).write_bytes(b"mock-tpr")
+    def fail(*args, **kwargs):
+        raise ValueError("unsupported TPR molecular attributes")
+    monkeypatch.setattr(importer, "publish_molecules", fail)
+    report = import_atlas(workspace, "1k5n_A")
+    assert report["status"] == "partial"
+    assert report["replicas"][0]["A"] == "complete"
+    assert report["replicas"][0]["bonds"] == "complete"
+    assert report["replicas"][0]["system"] == "failed"
+    assert "unsupported TPR" in report["replicas"][0]["system_error"]

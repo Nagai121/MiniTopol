@@ -87,3 +87,54 @@ Ramachandranは初回に全角度を計算し、全値・null/reasonのpayload h
 途中状態は新規作成時にprogress v4のチェックサム付き追記journalを使い、完成時に各パートの整合性を確認してから公開します。既存progress v3はv3のまま再開します。v4を認識しない旧版ではv4の途中状態を再開できません。
 
 SASA・主鎖角・二次構造は`bounded-columnar-v2`、周期Contactsは`periodic-spatial-zstd-v1`、その他の対象出力は`compact-v1`などの分割設定を記録します。主鎖角は中間精度を示す`float64-v1`も記録します。異なる処理レイアウトの途中結果には追記せずエラーにします。レイアウトが異なる未完了ジョブは、そのジョブを作成した実装・設定で完了させてください。
+
+## v0.2.0: source layout and static system attributes
+
+ATLAS downloads and the existing nine-field TSV now belong under
+`sources/ATLAS/<dataset>-<kind>/` and `sources/ATLAS/downloads.tsv`.
+The original nine TSV columns remain unchanged: dataset, kind, url, archive,
+downloaded_at, bytes, sha256, status, error. DB name is implicitly ATLAS; no
+additional DOI/version/license/learning-use database exists.
+
+Older Workspace layouts remain readable. Run
+`minitopol migrate-atlas-sources` to **explicitly** move tracked source folders
+and the ledger. The migration checks recorded archive sizes/SHA256, verifies
+processed manifest source fingerprints, and rewrites only the GRO/PDB/XTC
+absolute source paths in `manifest.json`; it preserves the source identity,
+A.zarr, descriptors and DuckDB catalog. It refuses filename/ledger collisions
+instead of overwriting, and supports restart after partially moved folders or
+publication of a second ledger. Conflicting old/new ledger rows require manual
+reconciliation. A common `atlas-sources` lock excludes concurrent ATLAS
+download/check/import operations for the duration of the migration.
+Manually staged old folders without a download ledger are readable but not
+automatically moved.
+
+Every successful A conversion creates
+`trajectories/<id>/system_conditions.json` with schema 1. Keys are
+`temperature_k`, `pressure_bar`, `ensemble`, `integrator`,
+`time_step_ps`, `thermostat`, `barostat`, `force_field_name`,
+`force_field_version`, `water_model`, `ion_composition`, `ph`.
+The nine condition groups are represented by these twelve fields. Missing
+values are JSON null; there are no guessed force-field names, water models,
+pH values or chemical roles. An optional .mdp file, optional installed
+`gmx dump -s <tpr> -om <tempfile>`, or caller-supplied explicit data can
+populate them. Set temperature/pressure denote simulation targets, not
+measured trajectories. Incompatible repeat writes are rejected; previously
+unknown values can be enriched.
+
+When a validated source-to-TPR atom mapping and parseable TPR are provided,
+`trajectories/<id>/system/molecules.parquet` records each molecule's ID,
+TPR molecule type, atom count and sum of partial charges;
+`system/atom_properties.parquet` records each TPR atom's type, partial charge,
+molecule ID, and optional source/A point indices. TPR atoms missing from a
+protein-only XTC still appear, with null coordinate indices. These are
+static topology attributes, not protonation/ligand/cofactor inference or a
+second trajectory copy. H-bond and A-1 scientific definitions are unchanged.
+
+Use `minitopol system-metadata <trajectory> [--tpr <tpr> --mapping <json>]
+[--mdp <mdp>] [--conditions <json>]` to backfill existing A trajectories.
+These optional attributes are not required for successful core A conversion.
+
+ATLAS import reports `status: partial` if a parseable TPR exists but
+molecular system extraction fails, even if the A and bond calculations succeed.
+A missing TPR is allowed and produces `system: conditions_only`.

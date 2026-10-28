@@ -16,6 +16,7 @@ def main(argv=None):
     sub.add_parser("init")
     sub.add_parser("list")
     sub.add_parser("recover")
+    sub.add_parser("migrate-atlas-sources")
     run = sub.add_parser("run")
     run.add_argument("jobs", help="JSON array of independent trajectory pipeline jobs")
     run.add_argument("--workers", type=int, default=6)
@@ -29,6 +30,9 @@ def main(argv=None):
     atlas_import.add_argument("dataset")
     atlas_import.add_argument("--kind", choices=["analysis", "protein", "total"], default="analysis")
     atlas_import.add_argument("--solvent", nargs="*", default=["SOL", "WAT", "HOH"])
+    atlas_import.add_argument("--hydrogen-bonds", action="store_true",
+                              help="Extract H-bonds from full-atom XTC and TPR during A import")
+    atlas_import.add_argument("--nonperiodic-hbonds", action="store_true")
     importing = sub.add_parser("convert")
     importing.add_argument("gro")
     importing.add_argument("xtc")
@@ -36,6 +40,24 @@ def main(argv=None):
     importing.add_argument("--id")
     importing.add_argument("--chunk-frames", type=int, help="Default: adapt to atom count (~32 MiB)")
     importing.add_argument("--elements", help="JSON array with one explicit element per source atom")
+    importing.add_argument("--mdp", help="Optional GROMACS MDP settings for system_conditions.json")
+    importing.add_argument("--hbond-tpr", help="Optional TPR for same-pass hydrogen-bond extraction")
+    importing.add_argument("--hbond-mapping", help="JSON array with validated source-to-TPR atom indices")
+    importing.add_argument("--nonperiodic-hbonds", action="store_true")
+    backfill = sub.add_parser("hydrogen-bonds-backfill")
+    backfill.add_argument("trajectory")
+    backfill.add_argument("gro")
+    backfill.add_argument("xtc")
+    backfill.add_argument("tpr")
+    backfill.add_argument("mapping", help="JSON atom mapping")
+    backfill.add_argument("--solvent", nargs="*", required=True)
+    backfill.add_argument("--nonperiodic", action="store_true")
+    system = sub.add_parser("system-metadata")
+    system.add_argument("trajectory")
+    system.add_argument("--tpr", help="Optional GROMACS TPR for static molecule data")
+    system.add_argument("--mapping", help="JSON array: validated source-to-TPR atom indices")
+    system.add_argument("--mdp", help="Optional GROMACS MDP file")
+    system.add_argument("--conditions", help="JSON object of explicitly known condition values")
     register = sub.add_parser("register")
     register.add_argument("name")
     register.add_argument("definition", help="JSON with version, groups, descriptor_definitions")
@@ -75,6 +97,22 @@ def main(argv=None):
     workspace = Workspace(args.workspace)
     if args.command == "init":
         print(workspace.path)
+    elif args.command == "migrate-atlas-sources":
+        from .atlas.ledger import migrate_atlas_sources
+        print(json.dumps({"source_directories_moved": migrate_atlas_sources(workspace)}))
+    elif args.command == "system-metadata":
+        from pathlib import Path
+        from .system_metadata import publish_conditions, publish_molecules
+        if bool(args.tpr) != bool(args.mapping):
+            parser.error("--tpr and --mapping must be supplied together")
+        values = json.loads(Path(args.conditions).read_text(encoding="utf-8")) if args.conditions else None
+        conditions = publish_conditions(workspace, args.trajectory, tpr=args.tpr,
+                                        mdp=args.mdp, supplied=values)
+        molecules = (publish_molecules(
+            workspace, args.trajectory, args.tpr,
+            json.loads(Path(args.mapping).read_text(encoding="utf-8")))
+            if args.tpr else None)
+        print(json.dumps({"conditions": conditions, "molecules": molecules}, ensure_ascii=False))
     elif args.command == "list":
         print(json.dumps({"trajectories": workspace.list_trajectories(),
                           "representations": Registry(workspace).representations()}))
@@ -86,15 +124,42 @@ def main(argv=None):
     elif args.command == "atlas-import":
         from .atlas import import_atlas
         result = import_atlas(workspace, args.dataset, args.kind,
-                              solvent_resnames=args.solvent)
+                              solvent_resnames=args.solvent,
+                              hydrogen_bonds=args.hydrogen_bonds,
+                              periodic=not args.nonperiodic_hbonds)
         print(json.dumps(result, indent=2))
         if result["status"] != "complete":
             raise SystemExit(1)
     elif args.command == "convert":
         from pathlib import Path
         elements = json.loads(Path(args.elements).read_text()) if args.elements else None
-        print(convert(workspace, args.gro, args.xtc, solvent_resnames=args.solvent,
-                      trajectory_id=args.id, atom_elements=elements, chunk_frames=args.chunk_frames))
+        if bool(args.hbond_tpr) != bool(args.hbond_mapping):
+            parser.error("--hbond-tpr and --hbond-mapping must be supplied together")
+        hb = {}
+        options = ({"tpr": args.hbond_tpr,
+                    "source_to_tpr": json.loads(Path(args.hbond_mapping).read_text()),
+                    "periodic": not args.nonperiodic_hbonds} if args.hbond_tpr else None)
+        tid = convert(workspace, args.gro, args.xtc, solvent_resnames=args.solvent,
+                      trajectory_id=args.id, atom_elements=elements, chunk_frames=args.chunk_frames,
+                      hydrogen_bonds=options, hbond_report=hb)
+        if args.mdp or (options and hb["status"] == "complete"):
+            from .system_metadata import publish_conditions, publish_molecules
+            publish_conditions(workspace, tid, mdp=args.mdp,
+                               tpr=args.hbond_tpr if options else None)
+            if options and hb["status"] == "complete":
+                publish_molecules(workspace, tid, args.hbond_tpr,
+                                  options["source_to_tpr"])
+        print(json.dumps({"trajectory": tid, "hydrogen_bonds": hb} if options else tid))
+        if options and hb["status"] != "complete":
+            raise SystemExit(1)
+    elif args.command == "hydrogen-bonds-backfill":
+        from pathlib import Path
+        from .hydrogen_bonds import reconstruct_hydrogen_bonds
+        report = reconstruct_hydrogen_bonds(
+            workspace, args.trajectory, args.gro, args.xtc, args.tpr,
+            json.loads(Path(args.mapping).read_text()), args.solvent,
+            periodic=not args.nonperiodic)
+        print(json.dumps(report))
     elif args.command == "register":
         from pathlib import Path
         definition = json.loads(Path(args.definition).read_text())

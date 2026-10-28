@@ -117,6 +117,18 @@ class Registry:
         self.manifest(trajectory)
         return annotations(self, trajectory)
 
+    def system_conditions(self, trajectory):
+        from .storage import read_json
+        self.manifest(trajectory)
+        return read_json(self.workspace.trajectory_path(trajectory) / "system_conditions.json")
+
+    def molecule_data(self, trajectory):
+        """Return molecule and full-TPR atom attribute tables."""
+        self.manifest(trajectory)
+        directory = self.workspace.trajectory_path(trajectory) / "system"
+        return (pq.read_table(directory / "molecules.parquet"),
+                pq.read_table(directory / "atom_properties.parquet"))
+
     def bonds(self, trajectory):
         """Get an independently stored static TPR-derived A-point bond graph."""
         from .bond_store import BondStore
@@ -125,6 +137,10 @@ class Registry:
     def bond_info(self, trajectory):
         from .bond_store import BondStore
         return BondStore(self.workspace).info(trajectory)
+
+    def hydrogen_bond_info(self, trajectory):
+        from .hydrogen_bonds import hydrogen_bond_info
+        return hydrogen_bond_info(self.workspace, trajectory)
 
     def coordinate_blocks(self, trajectory, **kwargs):
         from .coordinates import coordinate_blocks

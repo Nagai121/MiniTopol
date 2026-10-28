@@ -20,7 +20,7 @@ def _validate_jobs(jobs):
     normalized, destinations = [], set()
     allowed = {"workspace", "gro", "xtc", "solvent_resnames", "trajectory_id",
                "atom_elements", "annotation", "tpr", "source_to_tpr",
-               "analysis", "estimated_work"}
+               "analysis", "estimated_work", "hydrogen_bonds"}
     for index, job in enumerate(jobs):
         if not isinstance(job, dict) or set(job) - allowed:
             raise ValueError("Unknown pipeline job fields")
@@ -33,6 +33,10 @@ def _validate_jobs(jobs):
             raise ValueError("solvent_resnames must be an explicit list of names")
         if ("tpr" in job) != ("source_to_tpr" in job):
             raise ValueError("TPR bonds require an explicit source_to_tpr mapping")
+        if "hydrogen_bonds" in job and type(job["hydrogen_bonds"]) is not bool:
+            raise ValueError("hydrogen_bonds must be a boolean")
+        if job.get("hydrogen_bonds") and "tpr" not in job:
+            raise ValueError("Hydrogen-bond reconstruction requires TPR and source_to_tpr")
         value = dict(job)
         for field in ("workspace", "gro", "xtc", "tpr"):
             if field in value:
@@ -67,19 +71,37 @@ def _pipeline(job):
     from .workspace import Workspace
 
     workspace = Workspace(job["workspace"])
+    hb = {}
+    source = ({"tpr": job["tpr"], "source_to_tpr": job["source_to_tpr"],
+               "periodic": job["analysis"]["coordinate_mode"] != "nonperiodic"}
+              if job.get("hydrogen_bonds") else None)
     trajectory = convert(workspace, job["gro"], job["xtc"],
                          solvent_resnames=job["solvent_resnames"],
                          trajectory_id=job.get("trajectory_id"),
-                         atom_elements=job.get("atom_elements"))
+                         atom_elements=job.get("atom_elements"),
+                         hydrogen_bonds=source, hbond_report=hb)
     if "annotation" in job:
         Registry(workspace).annotate(trajectory, **job["annotation"])
     edges = None
     if "tpr" in job:
         from .descriptors.bond_reconstruction import reconstruct_bonds
         edges = reconstruct_bonds(workspace, trajectory, job["tpr"], job["source_to_tpr"])
+    from .system_metadata import publish_conditions, publish_molecules
+    system_info = None
+    try:
+        publish_conditions(workspace, trajectory, tpr=job.get("tpr"))
+        if "tpr" in job:
+            system_info = publish_molecules(workspace, trajectory, job["tpr"],
+                                            job["source_to_tpr"])
+    except Exception as exc:
+        # Optional TPR metadata must not invalidate completed A/descriptors.
+        system_info = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     report = analyze(workspace, trajectory, **job["analysis"])
-    return {"status": report["status"], "workspace": str(workspace.path),
-            "trajectory": trajectory, "bond_edges": edges, "analysis": report}
+    status = "complete" if report["status"] == "complete" and hb.get("status", "complete") == "complete" else "incomplete"
+    return {"status": status, "workspace": str(workspace.path),
+            "trajectory": trajectory, "bond_edges": edges, "system": system_info,
+            "hydrogen_bonds": hb if source is not None else "not_requested",
+            "analysis": report}
 
 
 def _worker(path):

@@ -19,7 +19,8 @@ def position_chunk_frames(logical,atoms):
 
 
 def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
-            atom_elements=None, chunk_frames=None):
+            atom_elements=None, chunk_frames=None, hydrogen_bonds=None,
+            hbond_report=None):
     """Convert all frames, resuming only at committed Zarr chunk boundaries.
 
     Solvent residue names are explicit for both GRO and PDB sources.
@@ -100,29 +101,87 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                 "residue_index": ag.resindices, "residue_id": ag.resids,
                 "residue_name": ag.resnames.tolist(), "segment": ag.segids.tolist(),
             }))
-            for start in range(manifest["committed_frames"], frames, chunk_frames):
+            hb_writer, hb_error, hb_identity = None, None, None
+            if hydrogen_bonds is not None:
+                try:
+                    from .hydrogen_bonds import HydrogenBondStore
+                    hb_writer = HydrogenBondStore(
+                        workspace, trajectory_id, source_identity=identity,
+                        frames=frames, tpr=hydrogen_bonds["tpr"],
+                        source_to_tpr=hydrogen_bonds["source_to_tpr"],
+                        elements=elements, names=universe.atoms.names,
+                        resnames=universe.atoms.resnames,
+                        solvent_resnames=solvents, chunk_frames=chunk_frames,
+                        periodic=hydrogen_bonds.get("periodic", True))
+                    hb_identity = hb_writer.identity
+                except Exception as error:
+                    hb_error = f"{type(error).__name__}: {error}"
+            # The single full-atom XTC walk feeds A and HB independently.
+            # Already committed A chunks are never rewritten for HB backfill.
+            for start in range(0, frames, chunk_frames):
                 stop = min(start + chunk_frames, frames)
-                positions = np.empty((stop - start, atoms, 3), dtype=np.float32)
-                time = np.empty(stop - start, dtype=np.float64)
-                boxes = np.empty((stop - start, 3, 3), dtype=np.float32)
-                for index, ts in enumerate(universe.trajectory[start:stop]):
-                    positions[index] = ts.positions[selected]
-                    time[index] = ts.time
-                    boxes[index] = np.nan if ts.triclinic_dimensions is None else ts.triclinic_dimensions
-                if not np.isfinite(positions).all() or not np.isfinite(time).all():
-                    raise ValueError("Nonfinite source coordinates or times")
-                group["positions"][start:stop] = positions
-                group["time"][start:stop] = time
-                group["box"][start:stop] = boxes
-                # The manifest is the commit marker. A restart overwrites an
-                # interrupted, uncommitted chunk without touching earlier chunks.
-                manifest["committed_frames"] = stop
-                atomic_json(manifest_path, manifest)
+                need_a = start >= manifest["committed_frames"]
+                need_hb = hb_writer is not None and not hb_writer.has(start, stop)
+                if not need_a and not need_hb:
+                    continue
+                if need_a:
+                    positions = np.empty((stop - start, atoms, 3), dtype=np.float32)
+                    time = np.empty(stop - start, dtype=np.float64)
+                    boxes = np.empty((stop - start, 3, 3), dtype=np.float32)
+                def source_frames():
+                    for index, ts in enumerate(universe.trajectory[start:stop]):
+                        box = (ts.triclinic_dimensions.copy()
+                               if ts.triclinic_dimensions is not None
+                               else np.full((3, 3), np.nan))
+                        if need_a:
+                            positions[index] = ts.positions[selected]
+                            time[index] = ts.time
+                            boxes[index] = box
+                        yield ts.positions, box
+                if need_hb:
+                    try:
+                        hb_writer.append(start, stop, source_frames())
+                    except Exception as error:
+                        hb_error = f"{type(error).__name__}: {error}"
+                        hb_writer.close()
+                        hb_writer = None
+                        # Complete the A chunk even when HB processing stopped
+                        # before consuming its entire source-frame iterator.
+                        if need_a:
+                            for _ in source_frames():
+                                pass
+                elif need_a:
+                    for _ in source_frames():
+                        pass
+                if need_a:
+                    if not np.isfinite(positions).all() or not np.isfinite(time).all():
+                        raise ValueError("Nonfinite source coordinates or times")
+                    group["positions"][start:stop] = positions
+                    group["time"][start:stop] = time
+                    group["box"][start:stop] = boxes
+                    manifest["committed_frames"] = stop
+                    atomic_json(manifest_path, manifest)
             manifest["status"] = "complete"
             atomic_json(manifest_path, manifest)
             with workspace.catalog() as con:
                 con.execute("INSERT INTO trajectories VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
                             [trajectory_id, path.relative_to(workspace.path).as_posix(), frames, atoms, identity])
+            if hb_writer is not None:
+                try:
+                    hb_writer.finish()
+                except Exception as error:
+                    hb_error = f"{type(error).__name__}: {error}"
+                finally:
+                    hb_writer.close()
+            if hydrogen_bonds is not None:
+                if hbond_report is not None:
+                    hbond_report.update(
+                        status="failed" if hb_error else "complete",
+                        identity=hb_identity, error=hb_error)
+                elif hb_error is not None:
+                    raise RuntimeError("A conversion completed, hydrogen bonds failed: " + hb_error)
+        from .system_metadata import publish_conditions
+        publish_conditions(workspace, trajectory_id)
         return trajectory_id
 
 

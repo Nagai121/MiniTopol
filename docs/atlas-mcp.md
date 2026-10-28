@@ -22,7 +22,7 @@ print(DownloadLedger(workspace).list())
 ```
 
 Archive is stored under
-`BaseTraj_Workspace/trajectories/atlas-1k5n_A-analysis/source/1k5n_A_analysis.zip`.
+`BaseTraj_Workspace/sources/ATLAS/1k5n_A-analysis/1k5n_A_analysis.zip`.
 By default, only *.xtc, *.pdb, *.tpr, *.gro members are extracted beside
 the ZIP, without trusting ZIP member paths. Use `extract=False` to retain only
 the archive. An archive with a matching ledger entry is rechecked before reuse;
@@ -31,7 +31,7 @@ A crash after publication of a valid ZIP but before the completion record can
 be recovered from the existing archive without another network transfer.
 Abandoned unpublished `.atlas-download-*` and `.atlas-extract-*` temporary
 files are cleaned up on the next locked acquisition. The ledger is an atomic TSV
-at `BaseTraj_Workspace/atlas/downloads.tsv` and is separate from DuckDB,
+at `BaseTraj_Workspace/sources/ATLAS/downloads.tsv` and is separate from DuckDB,
 which tracks only **converted** trajectories. The ledger reports `complete` only when the requested operation succeeds,
 including extraction when requested. If download, archive validation, or
 extraction fails, the ledger reports `failed` and includes the error;
@@ -115,3 +115,5 @@ only examines already extracted files. Use `atlas_download` first for retrieval;
 it does not automatically start conversion. For a pre-existing A, Python's
 `reconstruct_bonds(workspace, trajectory, tpr, validated_source_to_tpr)`
 adds only the bond graph without recomputing A.
+
+Legacy source directories remain readable; explicitly migrate tracked data with `minitopol migrate-atlas-sources`. See `docs/schema.md` for the v0.2.0 layout and static system metadata.
