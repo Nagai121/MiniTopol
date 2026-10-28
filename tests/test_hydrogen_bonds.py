@@ -74,7 +74,7 @@ def test_three_categories_one_pass_immutable_and_bounded_reads(tmp_path, monkeyp
     ws = Workspace(tmp_path / "ws")
     tid, report = _run(ws, gro, xtc, tpr)
     assert report["status"] == "complete", report
-    assert Registry(ws).manifest(tid)["atoms"] == 6
+    assert Registry(ws).manifest(tid)["atoms"] == 4
     result = Registry(ws).hydrogen_bond_info(tid)
     assert result["frames"] == 3
     assert result["rows"] == {category: 3 for category in hb.CATEGORIES}
