@@ -65,6 +65,8 @@ def _encode_sct2_native(counts,frames,times):
 
 
 def encode_native(counts,frames,times):
+ if not __package__:
+  return _encode_sct2_native(counts,frames,times)
  from .gray_counts import encode_native as write_gray,_bounds
  if counts.ndim==2:
   try:_bounds(*map(int,counts.shape))

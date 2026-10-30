@@ -2,7 +2,7 @@
 import numpy as np
 
 def remember(ctx, point, mean, dots):
-    if ctx.fft_block < ctx.n:
+    if ctx.fft_block < ctx.n or not callable(getattr(ctx, 'ca_indices', None)):
         return
     cache = getattr(ctx, '_shared_ca_dots', None)
     if cache is None:
