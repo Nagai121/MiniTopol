@@ -5,7 +5,8 @@ import duckdb,pyarrow as pa
 from filelock import FileLock
 from minitopol.descriptors.context import AnalysisContext
 from minitopol.descriptors.precision64 import backbone_frames64
-from minitopol.descriptors.compact_output import _frames,_backbone_table
+from minitopol.descriptors.compact_output import _frames
+from minitopol.backbone_columns import RamaBatch
 from minitopol.descriptors import ramachandran
 from minitopol.descriptors.results import with_result_metadata,_payload_hash
 
@@ -22,18 +23,42 @@ class ReadOnlyWorkspace:
 class NeverCommitted:
     def has(self,frame):return False
 
-def tables(workspace,info):
+class SelectedParts:
+    def __init__(self,n,batch,keys):self.n,self.batch,self.keys=n,batch,keys
+    def has(self,frame):
+        first=(frame//self.batch)*self.batch;last=min(first+self.batch,self.n)
+        return f'frames-{first}-{last}' not in self.keys
+
+
+def tables(workspace,info,*,keys=None):
     params=info['definition']['parameters']
     ctx=AnalysisContext(workspace,info['trajectory'],coordinate_mode=params['coordinate_mode'],initial_whole=params['initial_whole'],half_box_steps=params['half_box_steps'],memory_mb=128)
     assert ctx.annotation==params['annotation']
-    batch=_frames(ctx,'ramachandran');parts=[];start=None
-    for frame,time,angles,why in backbone_frames64(ctx,NeverCommitted()):
-        if start is None:start=frame
-        parts.append(_backbone_table('ramachandran',ramachandran,ctx,frame,time,angles,why))
+    batch=_frames(ctx,'ramachandran');builder=None;start=None
+    view=NeverCommitted() if keys is None else SelectedParts(ctx.n,batch,keys)
+    if keys is not None:
+        import re
+        ranges=[]
+        for key in keys:
+            match=re.fullmatch(r'frames-(\d+)-(\d+)',key)
+            if match is None:raise IOError('Invalid virtual range part key')
+            ranges.append(tuple(map(int,match.groups())))
+        original_blocks=ctx.registry.blocks
+        def selected_blocks(trajectory,representation='A',*,start=0,stop=None,chunk_frames=None):
+            width=chunk_frames or ctx.chunk
+            last=ctx.n if stop is None else stop
+            for offset in range(start,last,width):
+                end=min(offset+width,last)
+                if any(first<end and final>offset for first,final in ranges):
+                    yield from original_blocks(trajectory,representation,start=offset,stop=end,chunk_frames=width)
+        ctx.registry.blocks=selected_blocks
+    for frame,time,angles,why in backbone_frames64(ctx,view):
+        if start is None:start=frame;builder=RamaBatch(ctx.residues,ramachandran.SCHEMA)
+        builder.append(frame,time,angles,why)
         if (frame+1)%batch==0 or frame+1==ctx.n:
-            base=pa.concat_tables(parts);yield f'frames-{start}-{frame+1}',base
-            parts=[];start=None
-    assert not parts
+            yield f'frames-{start}-{frame+1}',builder.table()
+            builder=None;start=None
+    assert builder is None
 
 def sha_file(path):
     h=hashlib.sha256()

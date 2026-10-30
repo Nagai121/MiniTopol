@@ -22,12 +22,16 @@ def prepare_aligned_cache(ctx):
     if len(ca) < 3:
         raise ValueError("At least three non-collinear C-alpha atoms are required for aligned descriptors")
     ctx.cache_path.mkdir(parents=True, exist_ok=True)
+    # Reuse the existing exact f64 PCodec policy, already used for MSD slots.
+    from .msd import _slot_encoding
+    encoding = _slot_encoding()
+    codec_tag = encoding['serializer'].to_dict() if 'serializer' in encoding else {'name':'zarr-default'}
     marker = ctx.cache_path / "state"
-    state = read_json(marker) if marker.exists() else {"schema": 2, "committed": 0, "layout": ctx.layout}
+    state = read_json(marker) if marker.exists() else {"schema": 3, "encoding": codec_tag, "committed": 0, "layout": ctx.layout}
     if state["layout"] != ctx.layout:
         raise ValueError("Coordinate cache layout mismatch")
-    if state.get("schema") != 2:
-        raise IOError("Legacy coordinate cache has no integrity records; cannot safely resume this cache")
+    if state.get("schema") != 3 or state.get("encoding") != codec_tag:
+        raise IOError("Aligned cache codec contract changed; resume with its original source")
     committed = state["committed"]
     if type(committed) is not int or not 0 <= committed <= ctx.n or (committed != ctx.n and committed % ctx.chunk):
         raise IOError("Coordinate cache commit boundary mismatch")
@@ -37,11 +41,13 @@ def prepare_aligned_cache(ctx):
         if name not in cache:
             if committed:
                 raise IOError("Committed coordinate cache data is missing")
-            cache.create_array(name, shape=shape, chunks=chunks, dtype="f8")
+            cache.create_array(name, shape=shape, chunks=chunks, dtype="f8", **encoding)
         elif cache[name].shape != shape:
             raise IOError("Coordinate cache shape mismatch")
         elif cache[name].chunks != chunks or cache[name].dtype != np.dtype("f8"):
             raise IOError("Coordinate cache array schema mismatch")
+        if encoding and [codec.to_dict() for codec in cache[name].metadata.codecs] != [codec_tag]:
+            raise IOError("Aligned cache codec configuration mismatch")
     checks = ctx.cache_path / "aligned-checksums"
     # Zarr returns fill values for absent chunks. Check decoded data, not only
     # array shape or existence. Each check is bounded by one processing block;
@@ -55,6 +61,7 @@ def prepare_aligned_cache(ctx):
         actual = block_checksum(cache["positions"][start:stop], cache["time"][start:stop])
         if expected != {"stop": stop, "sha256": actual}:
             raise IOError("Committed coordinate cache checksum mismatch")
+    handoff = getattr(ctx, "_aligned_handoff_state", None) if committed == 0 else None
     if committed < ctx.n:
         reference = None
         for block in ctx.coordinate_blocks():
@@ -73,4 +80,7 @@ def prepare_aligned_cache(ctx):
             atomic_json(checks / str(block.start), {"stop": block.stop, "sha256": block_checksum(aligned, block.time)})
             state["committed"] = block.stop
             atomic_json(marker, state)
+            if handoff is not None:
+                from .aligned_rmsd_handoff import observe
+                observe(handoff, block.start, block.stop, aligned, block.time)
     return cache

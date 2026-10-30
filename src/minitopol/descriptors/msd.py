@@ -40,6 +40,8 @@ def calculate(ctx, writer):
     durable_slot = state["slot"]
     for point in range(state["atoms_done"], ctx.m):
         dots, prefix = atom_correlation(ctx, point, mean[point], directory / "scratch.zarr")
+        from .shared_ca_correlation import remember
+        remember(ctx, point, mean[point], dots)
         current, next_slot = state["slot"], 1 - state["slot"]
         for start in range(0, ctx.n, ctx.fft_block):
             stop = min(start + ctx.fft_block, ctx.n)

@@ -33,6 +33,7 @@ def definition_for(ctx, name):
         parameters.update(probe_angstrom=1.4, sphere_points=960, sphere_method="golden angle; z=1-2*(i+0.5)/n",
                           radii=ctx.properties["radii"], radii_source=ctx.properties["radii_source"],
                           periodic_image_occluders=False, unknown_radius="fail; no silent default")
+        parameters["precision"]='mixed:relative-float32-RN-GPU-points;float64-CPU-fallback-near0.01angstrom'
     if name == "gyration":
         parameters.update(masses=ctx.properties["masses"], mass_source=ctx.properties["mass_source"], unknown_mass="fail")
     if name == "secondary_structure":
@@ -70,7 +71,13 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
               "definition_set": "A-1", "results": {}, "layout": ctx.layout}
     report_path = workspace.path / "analyses" / (digest([trajectory, ctx.parameters, names, ctx.layout]) + ".json")
     execution_names=(["sasa"] if "sasa" in definitions else [])+[name for name in definitions if name!="sasa"]
+    ctx._sasa_alignment_requested=bool({'rmsd','rmsf','msd','time_correlation','dynamic_correlation'} & definitions.keys())
+    ctx._share_aligned_ca={'rmsd','dynamic_correlation'}.issubset(definitions)
+    if ctx._share_aligned_ca:
+        execution_names.remove('dynamic_correlation')
+        execution_names.insert(execution_names.index('rmsd')+1,'dynamic_correlation')
     report["execution_order"]=execution_names
+    ctx._share_raw_backbone={'ramachandran','secondary_structure'}.issubset(definitions)
     with ctx.cache_lock:
         def execute(name):
             definition=definitions[name]
@@ -87,6 +94,9 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
                     from .compact_output import _frames
                     output_layout={**output_layout,'output_partitioning':'bounded-columnar-v2',
                                    'output_batch_frames':_frames(ctx,name),'output_budget_bytes':ctx.budget}
+                if name=='time_correlation':
+                    from .compact_output import _timecorr_group_size
+                    output_layout={**output_layout,'output_partitioning':'bounded-point-group-v1','point_group_size':_timecorr_group_size(ctx)}
                 with ResultStore(workspace).dataset(trajectory, definition, layout=output_layout) as writer:
                     if not writer.complete:
                         module = import_module("." + CALCULATORS[name][0], __package__)
@@ -99,6 +109,9 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
             except Exception as error:
                 report["results"][name] = {"status": "failed", "definition_id": definition.identity,
                                           "reason": f"{type(error).__name__}: {error}"}
+            if name=='dynamic_correlation':ctx._shared_aligned_ca=None
+            if {'ramachandran','secondary_structure'}.issubset(report['results']):
+                ctx._shared_raw_backbone=None
             atomic_json(report_path, report)
         def prepare_independent_descriptor():
             for name in ('ramachandran','secondary_structure'):
@@ -109,6 +122,8 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
         for name in execution_names:
             if name not in report['results']:
                 execute(name)
+        report["sasa_alignment_audit"]=getattr(ctx,"_sasa_alignment_audit",None)
+        report["aligned_handoff_audit"] = getattr(ctx,"_aligned_handoff_audit",None)
         report["status"] = "complete" if all(r["status"] == "complete" for r in report["results"].values()) else "incomplete"
         report["report_path"] = str(report_path)
         atomic_json(report_path, report)

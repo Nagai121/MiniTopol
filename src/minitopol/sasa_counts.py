@@ -36,25 +36,45 @@ def encode(table,metadata):
  h=json.dumps(header,sort_keys=True,separators=(',',':')).encode()
  return MAGIC+struct.pack('<Q',len(h))+h+payload+tpayload
 def decode(raw,metadata,*,start=None,stop=None):
- if raw[:8]!=MAGIC:raise IOError('SASA count block magic mismatch')
- if len(raw)<16:raise IOError('Truncated count block')
- size=struct.unpack('<Q',raw[8:16])[0]
- if not 0<size<=4096 or 16+size>len(raw):raise IOError('Invalid count header length')
- h=json.loads(raw[16:16+size]);payload=raw[16+size:]
- if len(payload)!=h['counts_length']+h['time_length'] or sha(payload)!=h['payload_sha256']:raise IOError('Count block payload checksum/size mismatch')
- codec=Zstd(level=3);a=bytes(codec.decode(payload[:h['counts_length']]));b=bytes(codec.decode(payload[h['counts_length']:]))
- if sha(a)!=h['counts_raw_sha256'] or sha(b)!=h['time_raw_sha256']:raise IOError('Count decoded payload checksum mismatch')
- m=h['atoms'];n=h['frames']
- packed_columns=(m*n+7)//8
- if len(a)!=packed_columns*10 or len(b)!=n*8 or m!=len(metadata['residue_index']):raise IOError('Count axes size mismatch')
- bits=np.unpackbits(np.frombuffer(a,dtype='u1').reshape(10,packed_columns),axis=1,count=m*n,bitorder='little').astype('<u2')
- lanes=np.sum(bits<<np.arange(10,dtype='<u2')[:,None],axis=0,dtype='<u2')
- counts=lanes.reshape(m,n).T
- if counts.max(initial=0)>960:raise IOError('Invalid accessible count')
- fac=np.frombuffer(bytes.fromhex(metadata['factors_f8_hex']),dtype='<f8')
+ if raw[:8]==b'SCT3\x00\x00\x00\x00':
+  from .gray_counts import packed_binary
+  packed,b,h=packed_binary(raw);m=h['atoms'];n=h['frames']
+  if m!=len(metadata['residue_index']):raise IOError('SCT3 scientific axes size mismatch')
+ else:
+  if raw[:8]!=MAGIC:raise IOError('SASA count block magic mismatch')
+  if len(raw)<16:raise IOError('Truncated count block')
+  size=struct.unpack('<Q',raw[8:16])[0]
+  if not 0<size<=4096 or 16+size>len(raw):raise IOError('Invalid count header length')
+  h=json.loads(raw[16:16+size]);payload=raw[16+size:]
+  if len(payload)!=h['counts_length']+h['time_length'] or sha(payload)!=h['payload_sha256']:raise IOError('Count block payload checksum/size mismatch')
+  codec=Zstd(level=3);a=bytes(codec.decode(payload[:h['counts_length']]));b=bytes(codec.decode(payload[h['counts_length']:]))
+  if sha(a)!=h['counts_raw_sha256'] or sha(b)!=h['time_raw_sha256']:raise IOError('Count decoded payload checksum mismatch')
+  m=h['atoms'];n=h['frames']
+  packed_columns=(m*n+7)//8
+  if len(a)!=packed_columns*10 or len(b)!=n*8 or m!=len(metadata['residue_index']):raise IOError('Count axes size mismatch')
+  packed=np.frombuffer(a,dtype='u1').reshape(10,packed_columns)
  first=max(0,min(n,(start-h['start']) if start is not None else 0))
  last=max(first,min(n,(stop-h['start']) if stop is not None else n))
- values=counts[first:last].astype('f8')/960*fac
+ if (last-first)*8<n:
+  # A 10-bit integer is >960 iff bits6..9 are all1 and any low6 bit is1.
+  # Check EVERY logical count directly in packed planes before selecting rows.
+  invalid=packed[6]&packed[7]&packed[8]&packed[9]&np.bitwise_or.reduce(packed[:6],axis=0)
+  if m*n%8:invalid[-1]&=(1<<(m*n%8))-1
+  if np.any(invalid):raise IOError('Invalid accessible count')
+  indices=np.arange(m,dtype=np.int64)[:,None]*n+np.arange(first,last,dtype=np.int64)[None,:]
+  byte=indices//8;shift=indices%8
+  selected=np.zeros(indices.shape,dtype='<u2')
+  for plane in range(10):
+   selected|=(((packed[plane][byte]>>shift)&1).astype('<u2')<<plane)
+  counts=selected.T
+ else:
+  bits=np.unpackbits(packed,axis=1,count=m*n,bitorder='little').astype('<u2')
+  lanes=np.sum(bits<<np.arange(10,dtype='<u2')[:,None],axis=0,dtype='<u2')
+  full=lanes.reshape(m,n).T
+  if full.max(initial=0)>960:raise IOError('Invalid accessible count')
+  counts=full[first:last]
+ fac=np.frombuffer(bytes.fromhex(metadata['factors_f8_hex']),dtype='<f8')
+ values=counts.astype('f8')/960*fac
  times=np.frombuffer(b,dtype='<f8')[first:last];frames=np.arange(h['start']+first,h['start']+last)
  restored=expanded_table(context(metadata),frames,times,values)
  return restored.replace_schema_metadata({b'minitopol':metadata['scientific_metadata'].encode()})

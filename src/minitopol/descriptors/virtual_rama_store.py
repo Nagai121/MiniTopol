@@ -11,13 +11,13 @@ from .results import _payload_hash,with_result_metadata
 
 def environment():
     packages={}
-    for package in ['numpy','scipy','MDAnalysis','numba','pyarrow']:
+    for package in ['numpy','scipy','MDAnalysis','numba','pyarrow','zarr','numcodecs']:
         try:packages[package]=version(package)
         except PackageNotFoundError:packages[package]=None
     return dict(python=sys.version,packages=packages)
 def source_hashes():
     root=Path(__file__).resolve().parents[1]
-    names=['virtual_rama.py','registry.py','coordinates.py','annotations.py','descriptors/virtual_rama_store.py','descriptors/precision64.py','descriptors/kernels.py','descriptors/context.py','descriptors/compact_output.py','descriptors/ramachandran.py']
+    names=['descriptors/sasa_alignment.py','descriptors/aligned_rmsd_handoff.py','descriptors/alignment_cache.py','descriptors/shared_aligned_ca.py','descriptors/rmsd.py','descriptors/dynamic_correlation.py','backbone_columns.py','descriptors/shared_raw_backbone.py','descriptors/builtins.py','position_moddelta.py','position_xor.py','position_grid.py','agx_zarr.py','virtual_rama.py','registry.py','coordinates.py','annotations.py','descriptors/virtual_rama_store.py','descriptors/precision64.py','descriptors/kernels.py','descriptors/context.py','descriptors/compact_output.py','descriptors/ramachandran.py']
     return {name:reader.sha_file(root/name) for name in names}
 def dependencies(workspace,tid):
     root=workspace.trajectory_path(tid)
@@ -98,14 +98,26 @@ class RecipeWriter(DatasetWriter):
                 completed={**self.state,'rows':sum(p['rows'] for p in self.state['parts'])};verify_dataset(self.path,completed);atomic_json(self.marker,completed);self.store._register(self.result_id,self.relative,completed);self.state=completed;self.progress.unlink(missing_ok=True)
         finally:self.lock.release()
 
-def logical_tables(workspace,relative,*,connection=None):
+def logical_tables(workspace,relative,*,connection=None,start=None,stop=None):
     path=workspace.path/relative;completed=read_json(path.with_suffix('.json'));verify_dataset(path,completed)
     proxy=reader.ReadOnlyWorkspace(workspace.path,workspace.path/'locks')
     if connection is not None:
         @contextlib.contextmanager
         def borrowed():yield connection
         proxy.catalog=borrowed
-    for (key,base),part in zip(reader.tables(proxy,completed['info']),completed['parts'],strict=True):
+    parts=completed['parts'];keys=None
+    if start is not None or stop is not None:
+        import re
+        selected=[]
+        for part in parts:
+            match=re.fullmatch(r'frames-(\d+)-(\d+)',part['key'])
+            if match:
+                first,last=map(int,match.groups())
+                if (start is not None and last<=start) or (stop is not None and first>=stop):continue
+            selected.append(part)
+        parts=selected if selected else parts[:1]
+        keys={part['key'] for part in parts}
+    for (key,base),part in zip(reader.tables(proxy,completed['info'],keys=keys),parts,strict=True):
         if key!=part['key'] or len(base)!=part['rows'] or _payload_hash(base)!=part['payload_hash'] or base['value'].null_count!=part['undefined_values']:raise IOError('Virtual reconstruction scientific payload differs')
         yield with_result_metadata(base,completed['info'])
 def read_rows(workspace,relative,limit,*,connection=None):
@@ -123,7 +135,7 @@ def query(workspace,*,trajectory=None,definition_id=None,columns=None,start=None
     if not paths:raise LookupError('No virtual Rama results')
     tables=[]
     for (relative,) in paths:
-        for table in logical_tables(workspace,relative):
+        for table in logical_tables(workspace,relative,start=start,stop=stop):
             if definition_id is not None and table['definition_id'][0].as_py()!=definition_id:continue
             if start is not None:table=table.filter(pc.greater_equal(table['frame'],int(start)))
             if stop is not None:table=table.filter(pc.less(table['frame'],int(stop)))

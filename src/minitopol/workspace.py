@@ -2,12 +2,16 @@
 
 from contextlib import contextmanager
 import os
+import threading
 from pathlib import Path
 
 import duckdb
 from filelock import FileLock
 
 from .storage import digest, identifier
+
+
+_query_session_local = threading.local()
 
 
 class Workspace:
@@ -56,7 +60,33 @@ class Workspace:
         return Path.home() / "MiniTopol" / "BaseTraj_Workspace"
 
     @contextmanager
+    def query_session(self):
+        """Reuse one serialized catalog connection for explicit repeated reads.
+
+        Holds the workspace catalog lock for the whole with-block. Other
+        processes wait until it exits; do not use for unbounded idle sessions.
+        Every query still verifies the same result files, with no science cache.
+        """
+        sessions = getattr(_query_session_local, 'connections', None)
+        if sessions is None:
+            sessions = {}; _query_session_local.connections = sessions
+        key = str(self.path)
+        if key in sessions:
+            yield self
+            return
+        with self.catalog() as con:
+            sessions[key] = con
+            try:
+                yield self
+            finally:
+                del sessions[key]
+
+    @contextmanager
     def catalog(self):
+        existing = getattr(_query_session_local, 'connections', {}).get(str(self.path))
+        if existing is not None:
+            yield existing
+            return
         # Readers take the same lock: DuckDB connections in other processes
         # must not overlap a write connection.
         with FileLock(str(self.path / "locks" / "catalog.lock")):

@@ -15,7 +15,8 @@ def calculate(ctx,writer):
     for start in range(0,ctx.n,ctx.chunk):
         if not pairs:break
         stop=min(start+ctx.chunk,ctx.n)
-        displacement=ctx.read_aligned(start,stop,ca)-mean[ca]
+        from .shared_aligned_ca import read
+        displacement=read(ctx,start,stop,ca)-mean[ca]
         for left,right,_ in pairs:
             end_left=min(left+ctx.pair_block,size);end_right=min(right+ctx.pair_block,size)
             # Match legacy contiguous operand shape, axis order and summation.

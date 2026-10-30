@@ -58,7 +58,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
             # ~32 MiB of coordinate payload per write, capped for small systems.
             chunk_frames = max(1, min(1024, (32 * 1024 * 1024) // (len(selected) * 3 * 4)))
         options = {"source": source, "solvent_resnames": solvents,
-                   "elements_sha256": digest(elements.tolist()), "chunk_frames": chunk_frames, "format": 3, "position_codec": "AGX1-commit-divisor256"}
+                   "elements_sha256": digest(elements.tolist()), "chunk_frames": chunk_frames, "format": 3, "position_codec": "AGX3-modular-commit-divisor256"}
         identity = digest(options)
         trajectory_id = trajectory_id or identity[:32]
         path = workspace.trajectory_path(trajectory_id)
@@ -76,6 +76,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                             "element_origin": element_origin, "frames": frames, "atoms": atoms,
                             "committed_frames": 0, "status": "converting",
                             "coordinate_unit": "angstrom", "time_unit": "ps"}
+                manifest['coordinate_accuracy']={'status': 'experimental_approximate', 'family': 'exact_A', 'precision': 32, 'unit': 'angstrom', 'axis_error_bound': 0, 'coordinate_plane': 'originalbits', 'SASA': 'mixed:relative-float32-RN-GPU-points;float64-CPU-fallback-near0.01angstrom', 'descriptor_plane': 'SASAapprox;allothersoriginal', 'scientific_acceptance': False, 'near_coincident_policy': 'Any distinct atom pair distance<=0.01angstrom triggers originalCPU wholeframe; originaloverflow/coincident/otherguards maintained'}
                 atomic_json(manifest_path, manifest)
             group = zarr.open_group(str(path / "A.zarr"), mode="a", zarr_format=3)
             specs = {"positions": ((frames, atoms, 3), (chunk_frames, atoms, 3), "f4"),

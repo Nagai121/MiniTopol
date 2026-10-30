@@ -170,9 +170,11 @@ def secondary_labels(phi, psi):
 
 def backbone_frames(ctx,writer):
     """Bounded frames with legacy raw-coordinate difference precision intact."""
-    quads,reasons=backbone_quads(ctx);plan=_index_plan(quads)
-    nr=len(quads['phi']);batch=max(1,min(16,ctx.budget//max(1,ctx.m*24+nr*1024)//16))
-    for block in ctx.registry.blocks(ctx.trajectory,chunk_frames=ctx.chunk):
+    quads,reasons=backbone_quads(ctx)
+    from .shared_raw_backbone import source
+    quads,blocks,held=source(ctx,quads);plan=_index_plan(quads)
+    nr=len(quads['phi']);batch=max(1,min(16,(ctx.budget-held)//max(1,ctx.m*24+nr*1024)//16))
+    for block in blocks:
         for start in range(0,len(block.positions),batch):
             offsets=[i for i in range(start,min(start+batch,len(block.positions))) if not writer.has(block.start+i)]
             if not offsets:continue

@@ -35,5 +35,15 @@ def lease(*,on_wait=None):
                 gpu_sasa_batch._buffers=None
                 gpu_sasa_batch._points=None
                 gpu_sasa_batch._point_context=None
+                # Installed Numba caches CUfunctions by device ID, not context.
+                # Drop only this stage's context-bound handles; keep compiled
+                # binary/overload caches for safe loading into the next context.
+                from .descriptors.gpu_fused import fused_counts
+                from .descriptors.gpu_sort import sort_nearest
+                from .descriptors.direct_neighbors import direct_neighbors
+                device_id=cuda.current_context().device.id
+                for dispatcher in (fused_counts,sort_nearest,direct_neighbors):
+                    for kernel in list(dispatcher.overloads.values()):
+                        kernel._codelibrary._cufunc_cache.pop(device_id,None)
                 cuda.close()
         finally:held.release()
