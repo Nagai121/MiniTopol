@@ -1,0 +1,12 @@
+{
+  "status": "experimental_approximate",
+  "family": "exact_A",
+  "precision": 32,
+  "unit": "angstrom",
+  "axis_error_bound": 0,
+  "coordinate_plane": "originalbits",
+  "SASA": "mixed:relative-float32-RN-GPU-points;float64-CPU-fallback-near0.01angstrom",
+  "descriptor_plane": "SASAapprox;allothersoriginal",
+  "scientific_acceptance": false,
+  "near_coincident_policy": "Any distinct atom pair distance<=0.01angstrom triggers originalCPU wholeframe; originaloverflow/coincident/otherguards maintained"
+}

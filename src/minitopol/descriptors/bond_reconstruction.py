@@ -51,7 +51,7 @@ def _edges_in_ilists(ilists, *, include_settle=False):
     return sorted(edges)
 
 
-def _covalent_edges_from_tpr(tpr, *, include_settle=False, molecule_ids=False):
+def _decode_covalent_tpr(raw, *, include_settle=False, molecule_ids=False):
     """Decode typed TPR interactions without treating restraints as bonds.
 
     GROMACS SETTLE (water O-H) is omitted: A excludes hydrogens and solvent,
@@ -59,8 +59,7 @@ def _covalent_edges_from_tpr(tpr, *, include_settle=False, molecule_ids=False):
     """
     from MDAnalysis.topology.tpr import utils
 
-    with open(tpr, "rb") as stream:
-        data = utils.TPXUnpacker(stream.read())
+    data = utils.TPXUnpacker(raw)
     th = utils.read_tpxheader(data)
     if th.fver >= 119 and th.fgen >= 27:
         data = utils.TPXUnpacker2020.from_unpacker(data)
@@ -102,6 +101,38 @@ def _covalent_edges_from_tpr(tpr, *, include_settle=False, molecule_ids=False):
             ordinal += 1
             count += atoms_per_molecule
     return (count, all_edges, molecules) if molecule_ids else (count, all_edges)
+
+
+# Two include-SETTLE variants share molecule-ID work across callers, not chemistry.
+from collections import OrderedDict
+from threading import RLock
+import hashlib
+_TPR_SHARED=OrderedDict()
+_TPR_SHARED_LOCK=RLock()
+_TPR_CACHE_FILE_LIMIT=16*1024**2
+_TPR_CACHE_ENTRY_LIMIT=4*1024**2
+
+def _covalent_edges_from_tpr(tpr, *, include_settle=False, molecule_ids=False):
+    with open(tpr,'rb') as stream:raw=stream.read()
+    if (len(raw)>_TPR_CACHE_FILE_LIMIT or type(include_settle) is not bool
+            or type(molecule_ids) is not bool):
+        return _decode_covalent_tpr(raw,include_settle=include_settle,molecule_ids=molecule_ids)
+    key=(hashlib.sha256(raw).digest(),include_settle)
+    with _TPR_SHARED_LOCK:
+        saved=_TPR_SHARED.get(key)
+        if saved is not None:_TPR_SHARED.move_to_end(key)
+    if saved is not None:
+        count,edgebytes,idbytes=saved
+        edges=[tuple(pair) for pair in np.frombuffer(edgebytes,dtype='<i8').reshape(-1,2).tolist()]
+        if molecule_ids:return count,edges,np.frombuffer(idbytes,dtype='<i8').tolist()
+        return count,edges
+    count,edges,ids=_decode_covalent_tpr(raw,include_settle=include_settle,molecule_ids=True)
+    if (len(edges)*2+len(ids))*8<=_TPR_CACHE_ENTRY_LIMIT:
+        saved=(count,np.asarray(edges,dtype='<i8').reshape(-1,2).tobytes(),np.asarray(ids,dtype='<i8').tobytes())
+        with _TPR_SHARED_LOCK:
+            _TPR_SHARED[key]=saved;_TPR_SHARED.move_to_end(key)
+            while len(_TPR_SHARED)>2:_TPR_SHARED.popitem(last=False)
+    return (count,edges,ids) if molecule_ids else (count,edges)
 
 
 def reconstruct_bonds(workspace, trajectory: str, tpr: str,

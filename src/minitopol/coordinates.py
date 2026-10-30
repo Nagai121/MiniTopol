@@ -7,7 +7,7 @@ from MDAnalysis.lib.mdamath import triclinic_box
 from .registry import FrameBlock
 
 
-def box_dimensions(box):
+def _box_dimensions_uncached(box):
     box = np.asarray(box, dtype=np.float64)
     if box.shape != (3, 3) or not np.isfinite(box).all() or np.linalg.det(box) <= 0:
         raise ValueError("Periodic coordinates require a finite, invertible, right-handed box")
@@ -16,6 +16,23 @@ def box_dimensions(box):
     if abs(box[1, 0]) > box[0, 0]/2 + 1e-6 or abs(box[2, 0]) > box[0, 0]/2 + 1e-6 or abs(box[2, 1]) > box[1, 1]/2 + 1e-6:
         raise ValueError("Periodic minimum-image distances require a reduced GROMACS box")
     return triclinic_box(*box)
+
+
+from functools import lru_cache
+
+@lru_cache(maxsize=128)
+def _cached_box_dimensions(raw):
+    box=np.frombuffer(raw,dtype=np.float64).reshape(3,3)
+    value=_box_dimensions_uncached(box)
+    value.flags.writeable=False
+    return value
+
+def box_dimensions(box):
+    # Exact float64 content keys prevent stale reuse after caller mutation.
+    # Failed validation is never cached. Return fresh writable dimensions.
+    box=np.asarray(box,dtype=np.float64)
+    if box.shape!=(3,3):return _box_dimensions_uncached(box)
+    return _cached_box_dimensions(box.tobytes(order='C')).copy()
 
 
 def minimum_vectors(vectors, box):

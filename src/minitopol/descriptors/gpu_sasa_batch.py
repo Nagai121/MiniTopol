@@ -6,6 +6,8 @@ from .kernels import sphere_points
 _points=None
 _point_context=None
 _buffers=None
+_planner_context=None
+_planner_resident_blocks=None
 _lock=threading.RLock()
 
 def evaluate_batch(xyz,radii,budget,*,available=None):
@@ -18,8 +20,26 @@ def evaluate_counts(xyz,radii,budget,*,available=None):
     if os.environ.get('MINITOPOL_SASA_DEVICE','auto')=='cpu':return None
     with _lock:return _evaluate(xyz,radii,budget,available=available,counts_only=True)
 
+def _reservation(b,m):
+    required=b*m*3*8+m*8+960*3*8+b*m*128*4+b*m*(8+4)+4
+    compatible=_buffers is not None and _buffers['shape'][1]==m and _buffers['shape'][0]>=b
+    reserved=max(required,_buffers['bytes']+960*3*8) if compatible else required
+    extra=_buffers['bytes'] if _buffers is not None and not compatible else 0
+    return required,reserved,extra
+
+def fits_planned_reservation(b,m,budget,available):
+    # Scheduling shares the evaluator's existing conservative reservation.
+    # Native/device/shared-memory checks still run inside every real evaluation.
+    with _lock:
+        _,reserved,extra=_reservation(b,m)
+        shared=0
+        if (_buffers is not None and _planner_context is _buffers['context']
+                and _planner_resident_blocks is not None):
+            shared=min(b*m,_planner_resident_blocks)*128*72
+        return 1<=m<=2048 and 2*reserved+shared+extra<=min(budget//2,available)
+
 def _evaluate(xyz,radii,budget,*,available=None,counts_only=False):
-    global _points,_point_context,_buffers
+    global _points,_point_context,_buffers,_planner_context,_planner_resident_blocks
     if (type(xyz) is not np.ndarray or xyz.dtype!=np.dtype('f8') or xyz.ndim!=3
             or not 1<=len(xyz)<=32 or xyz.shape[2]!=3 or not xyz.flags.c_contiguous
             or np.geterr()!=dict(divide='warn',over='warn',under='ignore',invalid='warn')
@@ -32,10 +52,7 @@ def _evaluate(xyz,radii,budget,*,available=None,counts_only=False):
     b,m=xyz.shape[:2]
     if b*m<16:
         return None
-    required=xyz.nbytes+radii.nbytes+960*3*8+b*m*128*4+b*m*(8+4)+4
-    compatible=_buffers is not None and _buffers['shape'][1]==m and _buffers['shape'][0]>=b
-    reserved_required=max(required,_buffers['bytes']+960*3*8) if compatible else required
-    cached_extra=_buffers['bytes'] if _buffers is not None and not compatible else 0
+    required,reserved_required,cached_extra=_reservation(b,m)
     if not 1<=m<=2048 or 2*reserved_required+cached_extra>min(budget//2,available):return None
     if np.any((np.abs(xyz)>0)&(np.abs(xyz)<1e-20)):return None
     from ..acceleration import configure_cuda
@@ -48,8 +65,9 @@ def _evaluate(xyz,radii,budget,*,available=None,counts_only=False):
     free,_=context.get_memory_info()
     if free<256*1024**2:return None
     device=cuda.get_current_device()
-    if device.MAX_THREADS_PER_BLOCK<512:return None
+    if device.MAX_THREADS_PER_BLOCK<512 or device.WARP_SIZE!=32:return None
     resident_blocks=device.MULTIPROCESSOR_COUNT*(device.MAX_THREADS_PER_MULTI_PROCESSOR//128)
+    _planner_context=context;_planner_resident_blocks=resident_blocks
     shared_bound=min(b*m,resident_blocks)*128*72
     if 2*reserved_required+shared_bound+cached_extra>min(budget//2,available):return None
     from .gpu_fused import fused_counts

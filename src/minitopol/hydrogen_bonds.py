@@ -223,7 +223,8 @@ class HydrogenBondStore:
         """Consume one source frame at a time; never retain all solvent coordinates."""
         if self.complete or self.has(start, stop):
             return
-        records = {category: [] for category in CATEGORIES}
+        from .hb_column_batch import ColumnBatch
+        records = ColumnBatch(SCHEMA, CATEGORIES)
         observed = 0
         for offset, (xyz, box) in enumerate(frames):
             if offset >= stop-start or len(xyz) != len(self.molecules):
@@ -250,36 +251,22 @@ class HydrogenBondStore:
             d, h, a = d[keep], h[keep], a[keep]
             distances = distances[keep]
             angles = np.degrees(calc_angles(xyz[d], xyz[h], xyz[a], box=dims))
-            for donor, hydrogen, acceptor, distance, angle in zip(d, h, a, distances, angles):
-                if not np.isfinite(angle) or angle < self.angle_cutoff:
-                    continue
-                ds, aa = bool(self.solvent[donor]), bool(self.solvent[acceptor])
-                if ds and aa:
-                    continue
-                if ds != aa:
-                    category = "solvent_molecular"
-                elif self.molecules[donor] == self.molecules[acceptor]:
-                    category = "intramolecular"
-                else:
-                    category = "intermolecular"
-                records[category].append((
-                    int(start + offset), int(donor), int(hydrogen),
-                    int(acceptor), float(distance), float(angle)))
+            records.append(start + offset, d, h, a, distances, angles,
+                           self.solvent, self.molecules, self.angle_cutoff)
         if observed != stop-start:
             raise ValueError("Hydrogen-bond source frames are incomplete")
         index = len(self.state["parts"])
         part = {"start": start, "stop": stop, "categories": {}}
         for category in CATEGORIES:
-            rows = sorted(records[category])
-            table = pa.Table.from_pylist([
-                dict(zip(SCHEMA.names, row)) for row in rows], schema=SCHEMA)
+            table = records.table(category)
             relative = f"{category}/part-{index:08d}.parquet"
             path = self.directory / relative
             if path.exists():
                 if not pq.read_table(path).equals(table):
                     raise IOError("Uncommitted hydrogen-bond part differs; refusing overwrite")
             else:
-                atomic_parquet(path, table)
+                from .hb_parquet import atomic_events
+                atomic_events(path, table)
             part["categories"][category] = {
                 "path": relative, "sha256": fingerprint(path)["sha256"], "rows": len(table)}
         self.state["parts"].append(part)

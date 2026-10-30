@@ -98,7 +98,16 @@ def _pipeline(job):
         system_info = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     report = analyze(workspace, trajectory, **job["analysis"])
     status = "complete" if report["status"] == "complete" and hb.get("status", "complete") == "complete" else "incomplete"
-    return {"status": status, "workspace": str(workspace.path),
+    catalog_storage = None
+    if status == "complete":
+        from .catalog_compaction import compact_catalog
+        try:
+            catalog_storage = compact_catalog(workspace.path)
+        except ValueError as error:
+            # Bounded maintenance can decline a large/unsupported catalog.
+            # Saved science and the original catalog remain authoritative.
+            catalog_storage = {"compacted": False, "reason": str(error)}
+    return {"catalog_compaction": catalog_storage, "status": status, "workspace": str(workspace.path),
             "trajectory": trajectory, "bond_edges": edges, "system": system_info,
             "hydrogen_bonds": hb if source is not None else "not_requested",
             "analysis": report}

@@ -123,6 +123,7 @@ def calculate(ctx, writer):
     protein.update(ctx.atoms['residue_index'][i] for i in (ctx.annotation['alpha_carbons'] or []))
     if any(ctx.res_annotation.get(r, {}).get('run') is None for r in protein):
         raise ValueError('Contact neighbor exclusions require explicit continuous-segment annotations for protein residues')
+    scratch_writer, scratch_verify, scratch_reader = CompressedScratch, verify_scratch, open_reader
     count = len(ctx.residues)
     blocks = (count + ctx.pair_block - 1) // ctx.pair_block
     # Bound handles and total Python buffering; unusual systems retain the old path.
@@ -131,7 +132,10 @@ def calculate(ctx, writer):
     # Conservative native Zstd context reservation: at most one third of the
     # unchanged working budget. More streams retain the original algorithm.
     if blocks*(blocks+1)//2*4*1024**2>ctx.budget//3:
-        raise UseOriginal()
+        from .framed_contact_scratch import FramedScratch, verify, open_reader as framed_reader, reserve_bytes
+        if reserve_bytes(blocks*(blocks+1)//2)>ctx.budget//3:
+            raise UseOriginal()
+        scratch_writer, scratch_verify, scratch_reader = FramedScratch, verify, framed_reader
     if ctx.budget < 32 * 1024**2 or 9 * count**2 > ctx.budget // 4:
         raise UseOriginal()
     residues = np.asarray(ctx.residues, dtype=np.int64)
@@ -164,14 +168,14 @@ def calculate(ctx, writer):
                         key = int(keys[start])
                         raw = frame_bytes[start*DTYPE.itemsize:stop*DTYPE.itemsize]
                         if key not in files:
-                            files[key] = CompressedScratch(Path(folder) / str(key))
+                            files[key] = scratch_writer(Path(folder) / str(key))
                             hashes[key] = hashlib.sha256(); lengths[key] = 0
                         files[key].write(raw); hashes[key].update(raw); lengths[key] += len(raw)
             for file in files.values(): file.close()
             # All scratch files must pass before even one completed part is published.
             for key, expected in hashes.items():
                 path = Path(folder) / str(key)
-                verify_scratch(path,files[key],lengths[key],expected.digest(),DTYPE.itemsize)
+                scratch_verify(path,files[key],lengths[key],expected.digest(),DTYPE.itemsize)
             limit = max(4096, min(65536, ctx.budget // 4096))
             for left in range(0, count, ctx.pair_block):
                 for right in range(left, count, ctx.pair_block):
@@ -185,7 +189,7 @@ def calculate(ctx, writer):
                     path = Path(folder) / str((left // ctx.pair_block) * blocks + right // ctx.pair_block)
                     part = 0; last_count = 0
                     if path.exists():
-                        with open_reader(path) as file:
+                        with scratch_reader(path) as file:
                             while True:
                                 values = read_records(file,limit,DTYPE)
                                 if not len(values): break
