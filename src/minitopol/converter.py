@@ -187,7 +187,10 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
             # trajectories, use a matching GRO/PDB plus validated TPR mapping.
             from .system_metadata import publish_molecules
             publish_conditions(workspace, trajectory_id, tpr=gro)
-            publish_molecules(workspace, trajectory_id, gro, list(range(len(universe.atoms))))
+            mapping = list(range(len(universe.atoms)))
+            publish_molecules(workspace, trajectory_id, gro, mapping)
+            from .descriptors.bond_reconstruction import reconstruct_bonds
+            reconstruct_bonds(workspace, trajectory_id, gro, mapping)
         else:
             publish_conditions(workspace, trajectory_id)
         return trajectory_id
