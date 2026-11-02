@@ -28,15 +28,15 @@ def _identities(path):
                 ordinal[index] = seen[resname]
             labels.append((resname, name.strip().upper(), ordinal[index]))
         try:
-            elements = [str(x).strip().upper() for x in atoms.elements]
+            elements_attr = atoms.elements
+        except AttributeError:
+            # MDAnalysis NoDataError is also a ValueError: absent native
+            # elements in GRO are allowed, corrupt element axes are not.
+            elements = None
+        else:
+            elements = [str(x).strip().upper() for x in elements_attr]
             if len(elements) != len(labels):
                 raise ValueError("Element metadata does not match atom count")
-        except (AttributeError, ValueError) as exc:
-            # Missing native elements in GRO is normal. Names and the
-            # unique residue occurrence are still mandatory.
-            if isinstance(exc, ValueError):
-                raise
-            elements = None
         return labels, elements
     finally:
         if getattr(universe, "trajectory", None) is not None:
