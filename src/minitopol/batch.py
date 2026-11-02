@@ -90,6 +90,9 @@ def _pipeline(job):
         finally:
             if getattr(u, "trajectory", None) is not None:
                 u.trajectory.close()
+    if "tpr" in job:
+        from .atom_mapping import validate_source_mapping
+        validate_source_mapping(topology, tpr, mapping)
     source = ({"tpr": tpr, "source_to_tpr": mapping,
                "periodic": job["analysis"]["coordinate_mode"] != "nonperiodic"}
               if job.get("hydrogen_bonds") else None)

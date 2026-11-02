@@ -128,6 +128,8 @@ def publish_molecules(workspace, trajectory, tpr, source_to_tpr):
     indices remain null. No ligand/cofactor or protonation classifications.
     """
     manifest = Registry(workspace).manifest(trajectory)
+    from .atom_mapping import validate_workspace_mapping
+    source_to_tpr = validate_workspace_mapping(workspace, trajectory, tpr, source_to_tpr)
     from .hydrogen_bonds import _validate_mapping
     tpr = Path(tpr)
     u = mda.Universe(str(tpr))

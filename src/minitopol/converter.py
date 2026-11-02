@@ -107,7 +107,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                 try:
                     from .hydrogen_bonds import HydrogenBondStore
                     hb_writer = HydrogenBondStore(
-                        workspace, trajectory_id, source_identity=identity,
+                        workspace, trajectory_id, source_topology=gro, source_identity=identity,
                         frames=frames, tpr=hydrogen_bonds["tpr"],
                         source_to_tpr=hydrogen_bonds["source_to_tpr"],
                         elements=elements, names=universe.atoms.names,

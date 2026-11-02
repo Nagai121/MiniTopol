@@ -145,12 +145,15 @@ def main(argv=None):
             parser.error("--tpr and --mapping must be supplied together")
         if Path(args.topology).suffix.lower() == ".tpr" and args.tpr:
             parser.error("A direct TPR input does not need --tpr or --mapping")
-        tid = convert(workspace, args.topology, args.xtc, solvent_resnames=args.solvent,
-                      trajectory_id=args.id, atom_elements=elements, chunk_frames=args.chunk_frames,
-                      hydrogen_bonds=options, hbond_report=hb)
         extra_tpr = args.tpr or args.hbond_tpr
         mapping = (json.loads(Path(args.mapping).read_text()) if args.mapping else
                    options["source_to_tpr"] if options else None)
+        if extra_tpr:
+            from .atom_mapping import validate_source_mapping
+            validate_source_mapping(args.topology, extra_tpr, mapping)
+        tid = convert(workspace, args.topology, args.xtc, solvent_resnames=args.solvent,
+                      trajectory_id=args.id, atom_elements=elements, chunk_frames=args.chunk_frames,
+                      hydrogen_bonds=options, hbond_report=hb)
         if extra_tpr or args.mdp:
             from .system_metadata import publish_conditions, publish_molecules
             publish_conditions(workspace, tid, mdp=args.mdp, tpr=extra_tpr)
