@@ -138,3 +138,13 @@ These optional attributes are not required for successful core A conversion.
 ATLAS import reports `status: partial` if a parseable TPR exists but
 molecular system extraction fails, even if the A and bond calculations succeed.
 A missing TPR is allowed and produces `system: conditions_only`.
+
+### Extended TPR atom properties
+
+`system/atom_properties.parquet` contains `mass` (u), `partial_charge` (e),
+`tpr_residue_index`, `tpr_residue_name`, `tpr_atom`, `source_atom`,
+`a_point` and the existing molecule/type fields. It covers **all** TPR atoms;
+source/A indices are nullable for absent trajectory atoms. Legacy TPR tables
+may be enriched from the same validated TPR and mapping without altering
+previous values. A TPR-free source uses the existing element mass lookup
+and has no inferred partial charges.

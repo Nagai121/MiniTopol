@@ -116,3 +116,41 @@ python -m minitopol system-metadata <trajectory-id> --tpr input.tpr --mapping ma
 ```
 
 水素結合PR #7の機能を前提とした開発ブランチです。
+
+## TPR-driven physical properties and sparse electrostatics
+
+A direct `TPR + XTC` pair is the preferred topology/trajectory input when
+its atom counts and order match. GRO/PDB + XTC remains supported; reduced XTC
+files (including ATLAS protein-only trajectories) use the validated external
+GRO/PDB-to-TPR atom mapping. Missing/ambiguous mappings are never guessed.
+
+The full-TPR system table includes masses (u), partial charges (e), and
+TPR residue indices for all atoms, including hydrogen and solvent atoms
+excluded from A coordinates. The gyration calculator prefers TPR masses over
+the element mass table, with explicit user mass overrides still supported.
+For older system tables, republish metadata using the original TPR and mapping
+to enrich mass and residue fields without changing earlier attributes.
+
+The optional eleventh A descriptor `electrostatic_score` uses each TPR
+residue's all-atom net charge and its A heavy-atom geometric center:
+`score = Q_i * Q_j / r_ij` (e²/Å). Residue centers are rebuilt across
+periodic boundaries before distances are measured by minimum image when
+periodic analysis is selected. Pairs farther than 15 Å, or with either
+residue's net charge below 1e-5 e in absolute value, are omitted. Omitted
+pairs read as zero *of this truncated feature*, not zero physical Coulomb
+energy. Both sequentially adjacent residues and residues from distinct
+molecules are eligible. Only per-frame nonzero pairs are stored; no time
+average is produced. Missing charge is an error, not a zero. This score does
+not include solvent dielectric screening or PME electrostatics.
+
+Examples:
+
+```bash
+python -m minitopol --workspace ./workspace convert input.tpr input.xtc --solvent SOL WAT HOH
+python -m minitopol --workspace ./workspace calculate TRAJECTORY --coordinates continuous --initial-whole --descriptors electrostatic_score
+# Reduced trajectory with a separately validated source-to-TPR JSON mapping:
+python -m minitopol --workspace ./workspace convert reduced.gro reduced.xtc --solvent SOL --tpr full.tpr --mapping source-to-tpr.json
+```
+
+Default analysis adds `electrostatic_score` if enriched TPR atom properties
+exist. TPR-free datasets still run the original ten descriptors by default.
