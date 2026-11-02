@@ -30,6 +30,14 @@ def _sample_tpr_universe():
 def _fake_tpr(monkeypatch):
     import minitopol.atlas.checker as checker
     original = checker._labels
+    original_universe = mda.Universe
+
+    def tpr_universe(path, *args, **kwargs):
+        if str(path).lower().endswith(".tpr"):
+            return _sample_tpr_universe()
+        return original_universe(path, *args, **kwargs)
+
+    monkeypatch.setattr(mda, "Universe", tpr_universe)
 
     def labels(path):
         if path.suffix == ".tpr":

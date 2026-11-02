@@ -45,6 +45,9 @@ def _fake_tpr(monkeypatch, path):
         def __init__(self):
             self.atoms = type("Atoms", (), {
                 "charges": np.array([-.3, .3, -.8, -.3, .3, -.8, -.8, .4, .4]),
+                "names": ["N", "H", "O", "N", "H", "O", "OW", "HW1", "HW2"],
+                "resnames": ["ALA"] * 3 + ["LIG"] * 3 + ["SOL"] * 3,
+                "resindices": np.array([0, 0, 0, 1, 1, 1, 2, 2, 2]),
                 "__len__": lambda self: 9})()
     def create(filename, *args, **kwargs):
         if str(filename).endswith(".tpr"):
