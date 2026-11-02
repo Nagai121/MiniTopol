@@ -116,7 +116,12 @@ def _pipeline(job):
         # Optional TPR metadata must not invalidate completed A/descriptors.
         system_info = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     report = analyze(workspace, trajectory, **job["analysis"])
-    status = "complete" if report["status"] == "complete" and hb.get("status", "complete") == "complete" else "incomplete"
+    # A requested/available TPR is part of the job contract. Do not report a
+    # successful pipeline if its static metadata publication failed.
+    status = ("complete" if (report["status"] == "complete"
+                             and hb.get("status", "complete") == "complete"
+                             and not (isinstance(system_info, dict) and system_info.get("status") == "failed"))
+              else "incomplete")
     catalog_storage = None
     if status == "complete":
         from .catalog_compaction import compact_catalog
