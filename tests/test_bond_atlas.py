@@ -10,6 +10,8 @@ from minitopol.atlas.importer import import_atlas
 from minitopol.bond_store import BondStore
 from minitopol.descriptors import bond_reconstruction
 
+_REAL_UNIVERSE = mda.Universe
+
 
 def _source(workspace, replica="R1", kind="analysis"):
     directory = workspace.trajectory_path("atlas-1k5n_A-" + kind) / "source"
@@ -18,7 +20,7 @@ def _source(workspace, replica="R1", kind="analysis"):
 
 
 def _sample_tpr_universe():
-    u = mda.Universe.empty(6, n_residues=2,
+    u = _REAL_UNIVERSE.empty(6, n_residues=2,
                            atom_resindex=[0, 0, 0, 1, 1, 1], trajectory=True)
     u.add_TopologyAttr("names", ["N", "CA", "H", "OW", "HW1", "HW2"])
     u.add_TopologyAttr("resnames", ["ALA", "SOL"])
