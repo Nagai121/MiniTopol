@@ -101,3 +101,28 @@ def test_mcp_entrypoint_can_launch_independent_worker(tmp_path, trajectory):
                         report = report["result"]
                     assert report["status"] == "complete"
     asyncio.run(run())
+
+def test_tpr_metadata_failure_makes_pipeline_incomplete(tmp_path, trajectory, monkeypatch):
+    """A completed descriptor must not hide a failed requested TPR extraction."""
+    from minitopol.batch import _pipeline
+    from minitopol.descriptors import bond_reconstruction
+    from minitopol import system_metadata
+
+    value = job(tmp_path, trajectory, "failed-tpr-metadata")
+    value["analysis"] = {"coordinate_mode": "nonperiodic", "descriptors": ["gyration"]}
+    tpr = tmp_path / "invalid-for-mock.tpr"
+    tpr.write_bytes(b"test-TPR")
+    value["tpr"] = str(tpr)
+    value["source_to_tpr"] = list(range(6))
+    monkeypatch.setattr(bond_reconstruction, "reconstruct_bonds", lambda *a, **k: 0)
+    monkeypatch.setattr(system_metadata, "publish_conditions", lambda *a, **k: {})
+    def fail_molecules(*args, **kwargs):
+        raise ValueError("simulated TPR attribute extraction failure")
+    monkeypatch.setattr(system_metadata, "publish_molecules", fail_molecules)
+
+    report = _pipeline(value)
+    assert report["analysis"]["status"] == "complete"
+    assert report["system"]["status"] == "failed"
+    assert "simulated TPR attribute extraction failure" in report["system"]["error"]
+    assert report["status"] == "incomplete"
+
