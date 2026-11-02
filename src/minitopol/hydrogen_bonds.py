@@ -411,7 +411,7 @@ def reconstruct_hydrogen_bonds(workspace, trajectory, gro, xtc, tpr,
         if size != manifest["options"]["chunk_frames"]:
             raise ValueError("Backfill requires original conversion chunk length")
         writer = HydrogenBondStore(
-            workspace, trajectory, source_identity=manifest["identity"], frames=frames,
+            workspace, trajectory, source_topology=gro, source_identity=manifest["identity"], frames=frames,
             tpr=tpr, source_to_tpr=source_to_tpr, elements=elements,
             names=universe.atoms.names, resnames=universe.atoms.resnames,
             solvent_resnames=solvent_resnames, chunk_frames=size, periodic=periodic)
