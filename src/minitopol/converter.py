@@ -1,4 +1,4 @@
-"""GRO/PDB + XTC to an unaligned, unwrapped-independent heavy-atom base A."""
+"""GRO/PDB/TPR + XTC to an unaligned, unwrapped-independent heavy-atom base A."""
 
 from pathlib import Path
 from contextlib import contextmanager
@@ -23,7 +23,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
             hbond_report=None):
     """Convert all frames, resuming only at committed Zarr chunk boundaries.
 
-    Solvent residue names are explicit for both GRO and PDB sources.
+    Solvent residue names are explicit for GRO, PDB and TPR sources.
     Optional atom_elements supplies one element for every *source* atom.
     Otherwise MDAnalysis guesses elements from names; this provenance is saved.
     No chemical bonds are inferred. Original selected coordinates and all box
@@ -35,8 +35,8 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
         raise TypeError("solvent_resnames must be a sequence of residue names")
     solvents = sorted(set(solvent_resnames))
     source_format = Path(gro).suffix.lower().lstrip(".")
-    if source_format not in ("gro", "pdb"):
-        raise ValueError("A source topology must be GRO or PDB")
+    if source_format not in ("gro", "pdb", "tpr"):
+        raise ValueError("A source topology must be GRO, PDB or TPR")
     source = {source_format: fingerprint(gro), "xtc": fingerprint(xtc)}
     with _universe(gro, xtc) as universe:
         if atom_elements is None:
@@ -182,7 +182,14 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                 elif hb_error is not None:
                     raise RuntimeError("A conversion completed, hydrogen bonds failed: " + hb_error)
         from .system_metadata import publish_conditions
-        publish_conditions(workspace, trajectory_id)
+        if source_format == "tpr":
+            # Full-system TPR+XTC uses an identity atom mapping. For stripped
+            # trajectories, use a matching GRO/PDB plus validated TPR mapping.
+            from .system_metadata import publish_molecules
+            publish_conditions(workspace, trajectory_id, tpr=gro)
+            publish_molecules(workspace, trajectory_id, gro, list(range(len(universe.atoms))))
+        else:
+            publish_conditions(workspace, trajectory_id)
         return trajectory_id
 
 

@@ -90,6 +90,9 @@ def test_tpr_molecule_tables_are_full_system_not_just_a(tmp_path, trajectory, mo
     tpr.write_bytes(b"mock")
     class Atoms:
         charges = np.array([0.2, -0.2, 0.0, -0.8, 0.4, 0.4])
+        masses = np.array([14., 12., 1., 16., 1., 1.])
+        resindices = np.array([0, 0, 0, 1, 1, 1])
+        resnames = ["ALA", "ALA", "ALA", "SOL", "SOL", "SOL"]
         types = ["N", "CT", "H", "OW", "HW", "HW"]
         names = ["N", "CA", "H", "OW", "HW1", "HW2"]
         moltypes = ["PRO", "PRO", "PRO", "SOL", "SOL", "SOL"]
