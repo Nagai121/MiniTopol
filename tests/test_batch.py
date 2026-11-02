@@ -106,8 +106,11 @@ def test_tpr_metadata_failure_makes_pipeline_incomplete(tmp_path, trajectory, mo
     """A completed descriptor must not hide a failed requested TPR extraction."""
     from minitopol.batch import _pipeline
     from minitopol.descriptors import bond_reconstruction
-    from minitopol import system_metadata
+    from minitopol import system_metadata, atom_mapping
 
+    # This test isolates publication failure; mapping validation has its own
+    # real-topology regression tests in test_atom_mapping.py.
+    monkeypatch.setattr(atom_mapping, "validate_source_mapping", lambda *a, **k: None)
     value = job(tmp_path, trajectory, "failed-tpr-metadata")
     value["analysis"] = {"coordinate_mode": "nonperiodic", "descriptors": ["gyration"]}
     tpr = tmp_path / "invalid-for-mock.tpr"
