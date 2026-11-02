@@ -1,9 +1,10 @@
-"""Approved A-1 definitions and dispatch for all ten scientific Calculators."""
+"""A-1 scientific calculators plus optional TPR-based electrostatics."""
 
 from importlib import import_module
 import shutil
+import pyarrow.parquet as pq
 
-from ..storage import atomic_json, digest
+from ..storage import atomic_json, digest, fingerprint
 from .context import AnalysisContext
 from .definitions import DescriptorDefinition
 from .results import ResultStore
@@ -20,6 +21,7 @@ CALCULATORS = {
     "contacts": ("contacts", "dimensionless", "minimum heavy-atom residue distance <=4.5 angstrom; sparse frame states and full-trajectory contact fraction"),
     "time_correlation": ("time_correlation", "dimensionless", "C-alpha displacement dot autocorrelation, N-k origins, normalized by full-trajectory variance; all lags"),
     "dynamic_correlation": ("dynamic_correlation", "dimensionless", "aligned C-alpha displacement cross correlation normalized by both variances; residue pairs i<j"),
+    "electrostatic_score": ("electrostatics", "e^2/angstrom", "TPR all-atom residue net-charge product / PBC-aware heavy-atom geometric-center distance; cutoff 15 angstrom"),
 }
 
 
@@ -35,7 +37,24 @@ def definition_for(ctx, name):
                           periodic_image_occluders=False, unknown_radius="fail; no silent default")
         parameters["precision"]='mixed:relative-float32-RN-GPU-points;float64-CPU-fallback-near0.01angstrom'
     if name == "gyration":
-        parameters.update(masses=ctx.properties["masses"], mass_source=ctx.properties["mass_source"], unknown_mass="fail")
+        path = ctx.workspace.trajectory_path(ctx.trajectory) / "system" / "atom_properties.parquet"
+        has_mass = path.is_file() and "mass" in pq.read_schema(path).names
+        parameters.update(masses=ctx.properties["masses"],
+                          mass_source="TPR" if has_mass else ctx.properties["mass_source"],
+                          tpr_mass_attributes_sha256=fingerprint(path)["sha256"] if has_mass else None,
+                          unknown_mass="fail")
+    if name == "electrostatic_score":
+        path = ctx.workspace.trajectory_path(ctx.trajectory) / "system" / "atom_properties.parquet"
+        if not path.is_file():
+            raise ValueError("Electrostatic score requires TPR atom properties")
+        parameters.update(charge_source="TPR, all atoms including hydrogen",
+                          tpr_attributes_sha256=fingerprint(path)["sha256"],
+                          charge_epsilon_e=1e-5, cutoff_angstrom=15.0,
+                          distance="geometric centers of A heavy atoms",
+                          boundary="minimum image for periodic mode; unwrap each residue before centering",
+                          eligible="all distinct residue pairs, including neighbors",
+                          omitted="implicit zero for neutral or out-of-cutoff pairs",
+                          missing_charge="error", average="not stored")
     if name == "secondary_structure":
         parameters.update(helix_phi=[-100, -30], helix_psi=[-80, -5], extended_phi=[-180, -90],
                           extended_psi=[[90, 180], [-180, -150]], angles="[-180,180); other bounds inclusive",
@@ -46,7 +65,7 @@ def definition_for(ctx, name):
                           state_value=1, frequency_denominator="all N frames")
     if name in ("time_correlation", "dynamic_correlation"):
         parameters.update(zero_variance="null", variance_denominator="N")
-    return DescriptorDefinition(name, "A-1", "A", method, unit, parameters)
+    return DescriptorDefinition(name, "ES-1" if name == "electrostatic_score" else "A-1", "A", method, unit, parameters)
 
 
 def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
@@ -58,7 +77,13 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
     never published as complete. KeyboardInterrupt leaves resumable work intact.
     Normal results remain in Parquet, with only paths/definitions in DuckDB.
     """
-    names = list(CALCULATORS) if descriptors is None else list(descriptors)
+    if descriptors is None:
+        names = [name for name in CALCULATORS if name != "electrostatic_score"]
+        path = workspace.trajectory_path(trajectory) / "system" / "atom_properties.parquet"
+        if path.is_file() and {"a_point", "tpr_residue_index", "partial_charge"} <= set(pq.read_schema(path).names):
+            names.append("electrostatic_score")
+    else:
+        names = list(descriptors)
     if not names or len(set(names)) != len(names) or any(name not in CALCULATORS for name in names):
         raise ValueError("Choose nonduplicate descriptor names from: " + ", ".join(CALCULATORS))
     ctx = AnalysisContext(workspace, trajectory, coordinate_mode=coordinate_mode,
@@ -68,7 +93,7 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
     for definition in definitions.values():
         definition.register(workspace)
     report = {"trajectory": trajectory, "source_identity": ctx.manifest["identity"],
-              "definition_set": "A-1", "results": {}, "layout": ctx.layout}
+              "definition_set": "A-1 + ES-1" if "electrostatic_score" in names else "A-1", "results": {}, "layout": ctx.layout}
     report_path = workspace.path / "analyses" / (digest([trajectory, ctx.parameters, names, ctx.layout]) + ".json")
     execution_names=(["sasa"] if "sasa" in definitions else [])+[name for name in definitions if name!="sasa"]
     ctx._sasa_alignment_requested=bool({'rmsd','rmsf','msd','time_correlation','dynamic_correlation'} & definitions.keys())
