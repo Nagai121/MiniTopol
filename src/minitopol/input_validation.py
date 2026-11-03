@@ -77,7 +77,7 @@ def resolve_elements(universe, supplied=None, *, solvent_resnames=()):
                 if not values[i]:
                     values[i] = guessed[i]
                     provenance[i] = "name-guess"
-    unresolved = [i for i, e in enumerate(values) if not e or e == "X"]
+    unresolved = [i for i, e in enumerate(values) if not e or e.upper() in {"X", "DUMMY", "UNKNOWN", "?"}]
     solvent = {str(x).upper() for x in solvent_resnames}
     excluded_unknown = 0
     unresolved_non_solvent = []
