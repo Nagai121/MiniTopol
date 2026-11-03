@@ -108,3 +108,16 @@ def test_no_bond_graph_records_unverified_segments(two_residues):
     registry = Registry(ws)
     registry.annotate(tid, chains=[{"id":"A","segments":[[0,1]]}])
     assert registry.annotations(tid)[0]["validation"]["continuous_segments"]["status"] == "unverified"
+
+
+def test_massless_or_unknown_solvent_sites_are_never_reclassified_as_atoms():
+    u = mda.Universe.empty(2, n_residues=2, atom_resindex=[0,1], trajectory=True)
+    u.add_TopologyAttr("names", ["CA", "MW"])
+    u.add_TopologyAttr("resnames", ["ALA", "SOL"])
+    elements, origins, statuses, report = resolve_elements(u, solvent_resnames=["SOL"])
+    assert elements.tolist()[0] == "C"
+    assert elements.tolist()[1] == "X"
+    assert origins[1] == "unresolved-excluded-solvent"
+    assert report["unresolved_excluded_solvent_count"] == 1
+    with pytest.raises(ValueError, match="Unknown non-solvent atom"):
+        resolve_elements(u, solvent_resnames=[])

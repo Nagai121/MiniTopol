@@ -148,3 +148,29 @@ source/A indices are nullable for absent trajectory atoms. Legacy TPR tables
 may be enriched from the same validated TPR and mapping without altering
 previous values. A TPR-free source uses the existing element mass lookup
 and has no inferred partial charges.
+
+
+### Input validation evidence (new conversions)
+
+`manifest.json.input_validation.pairing` records `verified` when a
+topology coordinate snapshot matches the **ordered** first or final XTC
+frame to 0.06 angstrom. A nearly identical unordered snapshot with wrong
+atom indices is rejected. Differing snapshots are `unverified`, not treated
+as evidence of incorrect ordering or as verification. XTC itself has no
+atom identities. The input SHA-256 hashes are retained as before.
+
+`manifest.json.input_validation.elements` records native/inferred/
+provided element provenance, with per-A-atom `element_origin` and
+`element_validation` in `atoms.parquet`. Contradictions with explicit
+native elements are rejected. Unknown non-solvent elements are rejected;
+unknown atom identities such as TIP4P `MW` virtual sites inside
+**explicitly excluded** solvent residues remain unverified and excluded
+without inventing chemical elements.
+
+`annotations.parquet` specification metadata records a `validation`
+entry for user-supplied C-alpha indices and continuous residue segments.
+Recognized amino acids require a carbon atom named `CA`. TPR-backed
+residue adjacency requires supporting covalent bonds (peptide C-N for
+recognized adjacent amino acids). Without a bond graph, segments are
+`unverified`, not verified; detected contradictions reject publication.
+These fields do not retroactively certify older Workspace results.

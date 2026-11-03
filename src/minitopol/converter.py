@@ -41,7 +41,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
     source = {source_format: fingerprint(gro), "xtc": fingerprint(xtc)}
     with _universe(gro, xtc) as universe:
         pairing = validate_coordinate_pairing(universe, gro)
-        elements, origins, element_states, element_check = resolve_elements(universe, atom_elements)
+        elements, origins, element_states, element_check = resolve_elements(universe, atom_elements, solvent_resnames=solvents)
         element_origin = "native/explicit/protein-name/name-guess (per atom in atoms.parquet)"
         if elements.shape != (len(universe.atoms),):
             raise ValueError("A nonempty element is required for every source atom")

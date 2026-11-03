@@ -29,7 +29,7 @@ def _native_elements(atoms):
     return [str(value).strip().capitalize() for value in raw]
 
 
-def resolve_elements(universe, supplied=None):
+def resolve_elements(universe, supplied=None, *, solvent_resnames=()):
     """Prefer native elements, then recognized protein atom roles, then guesses.
 
     When a supplied element contradicts an explicit native element, stop.
@@ -78,16 +78,31 @@ def resolve_elements(universe, supplied=None):
                     values[i] = guessed[i]
                     provenance[i] = "name-guess"
     unresolved = [i for i, e in enumerate(values) if not e or e == "X"]
-    if unresolved:
+    solvent = {str(x).upper() for x in solvent_resnames}
+    excluded_unknown = 0
+    unresolved_non_solvent = []
+    for i in unresolved:
+        if str(atoms.resnames[i]).upper() in solvent:
+            # TIP4P and other solvent models can contain massless virtual
+            # sites without any element (e.g. MW). Never relabel such sites as
+            # ordinary atoms. They are omitted together with the solvent.
+            values[i] = "X"
+            provenance[i] = "unresolved-excluded-solvent"
+            states[i] = "unverified"
+            excluded_unknown += 1
+        else:
+            unresolved_non_solvent.append(i)
+    if unresolved_non_solvent:
         examples = [(int(i), str(atoms.names[i]), str(atoms.resnames[i]),
-                     str(values[i])) for i in unresolved[:12]]
-        raise ValueError(f"Unknown source atom element at {len(unresolved)} atoms: {examples}; supply explicit elements")
+                     str(values[i])) for i in unresolved_non_solvent[:12]]
+        raise ValueError(f"Unknown non-solvent atom element at {len(unresolved_non_solvent)} atoms: {examples}; supply explicit elements")
     report = {
         "status": "verified" if all(x == "verified" for x in states) else "unverified",
         "native_count": sum(x.startswith("native") for x in provenance),
         "protein_name_count": provenance.count("protein-atom-name"),
         "guess_count": provenance.count("name-guess"),
         "supplied_count": provenance.count("supplied"),
+        "unresolved_excluded_solvent_count": excluded_unknown,
         "reason": ("all elements present in source topology" if all(x == "verified" for x in states)
                    else "one or more elements supplied/inferred without independent confirmation")
     }
