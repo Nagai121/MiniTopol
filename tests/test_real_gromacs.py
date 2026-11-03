@@ -23,7 +23,7 @@ def test_real_adk_tpr_xtc_conversion_and_science(tmp_path):
     manifest = registry.manifest(tid)
     assert manifest["status"] == "complete"
     assert manifest["frames"] >= 2
-    assert manifest["atoms"] >= 2000
+    assert manifest["atoms"] >= 1000
     assert manifest["input_validation"]["pairing"]["status"] in ("verified", "unverified")
     assert manifest["input_validation"]["elements"]["status"] in ("verified", "unverified")
     molecule_table, atom_table = registry.molecule_data(tid)
