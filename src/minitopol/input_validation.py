@@ -77,8 +77,11 @@ def resolve_elements(universe, supplied=None):
                 if not values[i]:
                     values[i] = guessed[i]
                     provenance[i] = "name-guess"
-    if any(not e or e == "X" for e in values):
-        raise ValueError("Unknown source atom element; supply explicit elements")
+    unresolved = [i for i, e in enumerate(values) if not e or e == "X"]
+    if unresolved:
+        examples = [(int(i), str(atoms.names[i]), str(atoms.resnames[i]),
+                     str(values[i])) for i in unresolved[:12]]
+        raise ValueError(f"Unknown source atom element at {len(unresolved)} atoms: {examples}; supply explicit elements")
     report = {
         "status": "verified" if all(x == "verified" for x in states) else "unverified",
         "native_count": sum(x.startswith("native") for x in provenance),
