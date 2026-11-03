@@ -41,8 +41,6 @@ def main(argv=None):
     importing.add_argument("--chunk-frames", type=int, help="Default: adapt to atom count (~32 MiB)")
     importing.add_argument("--elements", help="JSON array with one explicit element per source atom")
     importing.add_argument("--mdp", help="Optional GROMACS MDP settings for system_conditions.json")
-    importing.add_argument("--tpr", help="Additional TPR for a GRO/PDB and reduced XTC")
-    importing.add_argument("--mapping", help="JSON source-to-TPR atom mapping for the additional TPR")
     importing.add_argument("--hbond-tpr", help="Optional TPR for same-pass hydrogen-bond extraction")
     importing.add_argument("--hbond-mapping", help="JSON array with validated source-to-TPR atom indices")
     importing.add_argument("--nonperiodic-hbonds", action="store_true")
@@ -141,23 +139,16 @@ def main(argv=None):
         options = ({"tpr": args.hbond_tpr,
                     "source_to_tpr": json.loads(Path(args.hbond_mapping).read_text()),
                     "periodic": not args.nonperiodic_hbonds} if args.hbond_tpr else None)
-        if bool(args.tpr) != bool(args.mapping):
-            parser.error("--tpr and --mapping must be supplied together")
-        if Path(args.topology).suffix.lower() == ".tpr" and args.tpr:
-            parser.error("A direct TPR input does not need --tpr or --mapping")
         tid = convert(workspace, args.topology, args.xtc, solvent_resnames=args.solvent,
                       trajectory_id=args.id, atom_elements=elements, chunk_frames=args.chunk_frames,
                       hydrogen_bonds=options, hbond_report=hb)
-        extra_tpr = args.tpr or args.hbond_tpr
-        mapping = (json.loads(Path(args.mapping).read_text()) if args.mapping else
-                   options["source_to_tpr"] if options else None)
-        if extra_tpr or args.mdp:
+        if args.mdp or (options and hb["status"] == "complete"):
             from .system_metadata import publish_conditions, publish_molecules
-            publish_conditions(workspace, tid, mdp=args.mdp, tpr=extra_tpr)
-            if extra_tpr:
-                publish_molecules(workspace, tid, extra_tpr, mapping)
-                from .descriptors.bond_reconstruction import reconstruct_bonds
-                reconstruct_bonds(workspace, tid, extra_tpr, mapping)
+            publish_conditions(workspace, tid, mdp=args.mdp,
+                               tpr=args.hbond_tpr if options else None)
+            if options and hb["status"] == "complete":
+                publish_molecules(workspace, tid, args.hbond_tpr,
+                                  options["source_to_tpr"])
         print(json.dumps({"trajectory": tid, "hydrogen_bonds": hb} if options else tid))
         if options and hb["status"] != "complete":
             raise SystemExit(1)

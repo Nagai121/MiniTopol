@@ -1,6 +1,6 @@
 # MiniTopol
 
-GRO＋XTCの教師トラジェクトリを逐次変換し、分子表現と記述子を管理するPythonパッケージです。
+TPR＋XTCを正規入力とする教師トラジェクトリ（従来のGRO＋XTCも引き続き取込可能）を逐次変換し、分子表現と記述子を管理するPythonパッケージです。
 基本表現Aは溶媒を除く全重原子で、Zarr v3に原座標・全フレームの時刻・ボックスを保存します。
 原子表と通常の記述子結果はParquet、SASAは整数counts、主鎖角は検証付きrecipeで保存します。所在・対応関係の管理と横断参照はDuckDBを使用します。各形式はWorkspace APIとMCPから論理表として取得できます。
 
@@ -148,8 +148,8 @@ Examples:
 ```bash
 python -m minitopol --workspace ./workspace convert input.tpr input.xtc --solvent SOL WAT HOH
 python -m minitopol --workspace ./workspace calculate TRAJECTORY --coordinates continuous --initial-whole --descriptors electrostatic_score
-# Reduced trajectory with a separately validated source-to-TPR JSON mapping:
-python -m minitopol --workspace ./workspace convert reduced.gro reduced.xtc --solvent SOL --tpr full.tpr --mapping source-to-tpr.json
+# Existing reduced-source metadata route remains separate from normal conversion:
+python -m minitopol --workspace ./workspace system-metadata TRAJECTORY --tpr full.tpr --mapping source-to-tpr.json
 ```
 
 Default analysis adds `electrostatic_score` if enriched TPR atom properties
