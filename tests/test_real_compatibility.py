@@ -36,9 +36,12 @@ def test_real_trajectories_from_distinct_molecular_systems(
             shutil.copyfileobj(original, output)
         topology = str(path)
     # Confirm MDAnalysis itself can combine the independent source pair.
-    with mda.Universe(topology, xtc) as universe:
+    universe = mda.Universe(topology, xtc)
+    try:
         atom_count = len(universe.atoms)
         frames = len(universe.trajectory)
+    finally:
+        universe.trajectory.close()
     print("REAL_SOURCE", json.dumps({
         "label":label, "source_atom_count":atom_count, "frames":frames,
         "topology":str(Path(topology).name),
@@ -65,12 +68,16 @@ def test_real_trajectories_from_distinct_molecular_systems(
 
 
 def test_real_adk_full_gro_to_tpr_mapping(tmp_path):
-    with mda.Universe(GRO) as source, mda.Universe(TPR) as target:
+    source, target = mda.Universe(GRO), mda.Universe(TPR)
+    try:
         print("FULL_TPR_MAPPING", json.dumps({
             "source_atoms":len(source.atoms), "target_atoms":len(target.atoms),
         }), flush=True)
         assert len(source.atoms) == len(target.atoms)
         mapping = list(range(len(source.atoms)))
+    finally:
+        source.trajectory.close()
+        target.trajectory.close()
     assert validate_source_mapping(GRO, TPR, mapping) == mapping
 
 
