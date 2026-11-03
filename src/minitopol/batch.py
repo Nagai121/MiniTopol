@@ -101,12 +101,14 @@ def _pipeline(job):
                          trajectory_id=job.get("trajectory_id"),
                          atom_elements=job.get("atom_elements"),
                          hydrogen_bonds=source, hbond_report=hb)
-    if "annotation" in job:
-        Registry(workspace).annotate(trajectory, **job["annotation"])
     edges = None
     if "tpr" in job:
         from .descriptors.bond_reconstruction import reconstruct_bonds
         edges = reconstruct_bonds(workspace, trajectory, tpr, mapping)
+    # Publish trusted topology connectivity *before* annotations so residue
+    # continuity can be checked against the actual TPR bond graph.
+    if "annotation" in job:
+        Registry(workspace).annotate(trajectory, **job["annotation"])
     from .system_metadata import publish_conditions, publish_molecules
     system_info = None
     try:
