@@ -140,6 +140,8 @@ def reconstruct_bonds(workspace, trajectory: str, tpr: str,
     """Use checker-provided atom mapping, never independently infer one."""
     if source_to_tpr is None:
         raise ValueError("A validated source-to-TPR atom mapping is required")
+    from ..atom_mapping import validate_workspace_mapping
+    source_to_tpr = validate_workspace_mapping(workspace, trajectory, tpr, source_to_tpr)
     atoms = Registry(workspace).atoms(trajectory).to_pydict()
     source_atoms = atoms["source_atom"]
     if (not source_atoms or max(source_atoms) >= len(source_to_tpr)

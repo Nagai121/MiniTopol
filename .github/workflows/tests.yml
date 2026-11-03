@@ -20,3 +20,27 @@ jobs:
         if: matrix.python == '3.12'
         run: python -m pip install -e ".[test,acceleration,lossless,parallel]"
       - run: python -m pytest -q
+
+  real-gromacs-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install MiniTopol and real MDAnalysis molecular data
+        run: python -m pip install -e ".[test,acceleration,parallel]" "MDAnalysisTests>=2.10,<2.11"
+      - name: End-to-end tests using real GROMACS TPR/GRO/XTC
+        run: python -m pytest -q -s tests/test_real_gromacs.py
+
+  real-compatibility-probes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install independent MDAnalysis real trajectories
+        run: python -m pip install -e ".[test,acceleration,parallel]" "MDAnalysisTests>=2.10,<2.11"
+      - name: Test diverse real molecular systems and true partial-source mapping
+        run: python -m pytest -q -s tests/test_real_compatibility.py

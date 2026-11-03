@@ -190,3 +190,18 @@ Contactsはメモリ予算内の順序付きfuturesで距離計算とspool書き
 途中結果の出力分割方式が異なる版では再開を拒否します。未完了データを元の版で
 完了するか、元Workspaceを保持した別のWorkspaceを使用してください。
 途中状態のlayoutを書き換えて再開させることはしません。
+
+## Optional eleventh descriptor: electrostatic_score
+
+The exact feature definition is residue net charge from **all** TPR atoms
+(including hydrogens), `Q_i Q_j / r_ij` (e²/Å), where `r_ij` is the distance
+between heavy-atom geometric residue centers. For periodic calculations,
+reconstruct each residue across its box boundary and apply minimum-image
+residue-center distances. Use a 15 Å cutoff and set `|Q| < 1e-5 e` to zero
+before spatial queries; adjacent sequence residues remain eligible.
+Only nonzero per-frame pairs are recorded as `frame`, `time_ps`,
+`residue_i`, `residue_j`, `value`. A missing row means zero **in this
+truncated feature**. Unknown or incomplete TPR charges never mean zero.
+No time averages or physical dielectric/PME energies are calculated.
+The descriptor is available by explicit name, and added to default
+analysis only when enriched TPR system properties exist.

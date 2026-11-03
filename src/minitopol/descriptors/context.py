@@ -2,6 +2,7 @@
 
 from importlib.resources import files
 import json
+import pyarrow.parquet as pq
 
 import numpy as np
 
@@ -78,12 +79,29 @@ class AnalysisContext:
 
     def atomic_values(self, kind):
         overrides = self.annotation[kind]
+        tpr_masses = None
+        if kind == "masses":
+            path = self.workspace.trajectory_path(self.trajectory) / "system" / "atom_properties.parquet"
+            if path.is_file():
+                table = pq.read_table(path)
+                if "mass" in table.column_names:
+                    tpr_masses = {}
+                    for point, mass in zip(table["a_point"].to_pylist(), table["mass"].to_pylist()):
+                        if point is not None:
+                            if point in tpr_masses:
+                                raise ValueError("Duplicate TPR mass mapping to an A point")
+                            tpr_masses[point] = mass
+                    if len(tpr_masses) != self.m:
+                        raise ValueError("Incomplete TPR mass mapping to A points")
         values = []
         for i, element in enumerate(self.atoms["element"]):
-            value = overrides.get(str(i), self.properties[kind].get(element))
-            if value is None or not np.isfinite(value) or value <= 0:
+            fallback = (tpr_masses[i] if tpr_masses is not None else self.properties[kind].get(element))
+            value = overrides.get(str(i), fallback)
+            if value is None or not np.isfinite(value) or value < 0 or (kind != "masses" and value == 0):
                 raise ValueError(f"Undefined {kind} for A point {i}, element {element}; supply an explicit override")
             values.append(value)
+        if kind == "masses" and not any(values):
+            raise ValueError("All atomic masses are zero")
         return np.asarray(values, dtype=np.float64)
 
     def coordinate_blocks(self):

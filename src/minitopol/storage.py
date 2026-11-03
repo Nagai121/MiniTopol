@@ -89,7 +89,7 @@ def atomic_json(path: Path, data) -> None:
 
 
 
-_BUILTIN_RESULTS = frozenset({'contacts','dynamic_correlation','gyration','msd','ramachandran','rmsd','rmsf','sasa','secondary_structure','time_correlation'})
+_BUILTIN_RESULTS = frozenset({'contacts','dynamic_correlation','gyration','msd','ramachandran','rmsd','rmsf','sasa','secondary_structure','time_correlation','electrostatic_score'})
 _RESULT_COLUMNS = frozenset({'trajectory','representation','descriptor','definition_id'})
 
 def _basic_result_schema(schema, *, metadata_dictionary=False):
@@ -121,7 +121,7 @@ def _parquet_options(table, *, _metadata_dictionary=False):
                 or pa.types.is_string(field.type)
                 or (_metadata_dictionary and field.name in _RESULT_COLUMNS and pa.types.is_dictionary(field.type) and pa.types.is_string(field.type.value_type))) for field in table.schema):
         return {"compression": "zstd"}
-    if descriptor not in {"contacts", "dynamic_correlation", "gyration", "msd", "ramachandran", "rmsd", "rmsf", "sasa", "secondary_structure", "time_correlation"}:
+    if descriptor not in {"contacts", "dynamic_correlation", "gyration", "msd", "ramachandran", "rmsd", "rmsf", "sasa", "secondary_structure", "time_correlation", "electrostatic_score"}:
         return {"compression": "zstd"}
     dictionary = [field.name for field in table.schema if pa.types.is_string(field.type)
                   or (_metadata_dictionary and field.name in _RESULT_COLUMNS and pa.types.is_dictionary(field.type))]

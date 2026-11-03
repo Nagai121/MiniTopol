@@ -117,3 +117,9 @@ it does not automatically start conversion. For a pre-existing A, Python's
 adds only the bond graph without recomputing A.
 
 Legacy source directories remain readable; explicitly migrate tracked data with `minitopol migrate-atlas-sources`. See `docs/schema.md` for the v0.2.0 layout and static system metadata.
+
+
+Enriched ATLAS import also preserves per-TPR-atom masses and full-TPR
+residue indices (including hydrogens absent from protein-only XTC).
+These support mass-weighted gyration and the optional sparse
+`electrostatic_score` descriptor without changing the validated pairing.

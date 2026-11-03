@@ -128,20 +128,27 @@ def publish_molecules(workspace, trajectory, tpr, source_to_tpr):
     indices remain null. No ligand/cofactor or protonation classifications.
     """
     manifest = Registry(workspace).manifest(trajectory)
+    from .atom_mapping import validate_workspace_mapping
+    source_to_tpr = validate_workspace_mapping(workspace, trajectory, tpr, source_to_tpr)
     from .hydrogen_bonds import _validate_mapping
     tpr = Path(tpr)
     u = mda.Universe(str(tpr))
     try:
         n = len(u.atoms)
         charge = np.asarray(u.atoms.charges, dtype=np.float64)
+        mass = np.asarray(u.atoms.masses, dtype=np.float64)
+        residue_indices = np.asarray(u.atoms.resindices, dtype=np.int64)
+        residue_names = list(map(str, u.atoms.resnames))
         types = list(map(str, u.atoms.types))
         names = list(map(str, u.atoms.names))
         try:
             moltypes = list(map(str, u.atoms.moltypes))
         except (AttributeError, ValueError):
             moltypes = [None] * n
-        if len(charge) != n or not np.isfinite(charge).all() or len(types) != n:
-            raise ValueError("TPR charges or atom types incomplete")
+        if (len(charge) != n or not np.isfinite(charge).all()
+                or len(mass) != n or not np.isfinite(mass).all() or np.any(mass < 0)
+                or len(residue_indices) != n or len(residue_names) != n or len(types) != n):
+            raise ValueError("TPR mass, charge, residue or atom type data incomplete")
     finally:
         if getattr(u, "trajectory", None) is not None:
             u.trajectory.close()
@@ -161,7 +168,10 @@ def publish_molecules(workspace, trajectory, tpr, source_to_tpr):
         {"tpr_atom": i, "source_atom": source_by_tpr.get(i),
          "a_point": point_by_source.get(source_by_tpr.get(i)),
          "molecule_id": int(molecule_ids[i]), "name": names[i],
-         "atom_type": types[i], "partial_charge": float(charge[i])}
+         "tpr_residue_index": int(residue_indices[i]),
+         "tpr_residue_name": residue_names[i],
+         "atom_type": types[i], "mass": float(mass[i]),
+         "partial_charge": float(charge[i])}
         for i in range(n)
     ])
     grouped = {}
@@ -188,10 +198,14 @@ def publish_molecules(workspace, trajectory, tpr, source_to_tpr):
         for path, table in ((directory / "atom_properties.parquet", atoms),
                             (directory / "molecules.parquet", molecules)):
             if path.exists():
-                if not pq.read_table(path).equals(table):
+                old = pq.read_table(path)
+                if old.equals(table):
+                    continue
+                # Enrich legacy TPR tables without changing existing attributes.
+                if not (set(old.column_names) <= set(table.column_names)
+                        and old.equals(table.select(old.column_names))):
                     raise ValueError("Different molecule data already stored: " + str(path))
-            else:
-                atomic_parquet(path, table)
+            atomic_parquet(path, table)
     if ions:
         publish_conditions(workspace, trajectory, supplied={"ion_composition": ions})
     return {"molecules": len(grouped), "atoms": n}

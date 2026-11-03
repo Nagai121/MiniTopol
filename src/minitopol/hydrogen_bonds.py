@@ -37,7 +37,7 @@ def _validate_mapping(mapping, source_count, tpr_count):
 class HydrogenBondStore:
     """Independent three-category published dataset; no A/result mutation."""
 
-    def __init__(self, workspace, trajectory, *, source_identity, frames, tpr,
+    def __init__(self, workspace, trajectory, *, source_topology, source_identity, frames, tpr,
                  source_to_tpr, elements, names, resnames, solvent_resnames,
                  chunk_frames, periodic=True, distance_cutoff=3.0,
                  angle_cutoff=150.0, acceptor_charge_max=-0.5):
@@ -61,6 +61,8 @@ class HydrogenBondStore:
             resnames = np.asarray(resnames, dtype=str)
             if any(len(array) != len(elements) for array in (names, resnames)):
                 raise ValueError("Source atom metadata axes differ")
+            from .atom_mapping import validate_source_mapping
+            validate_source_mapping(source_topology, tpr, source_to_tpr)
             tpr_universe = mda.Universe(str(tpr))
             try:
                 tpr_count = len(tpr_universe.atoms)
@@ -409,7 +411,7 @@ def reconstruct_hydrogen_bonds(workspace, trajectory, gro, xtc, tpr,
         if size != manifest["options"]["chunk_frames"]:
             raise ValueError("Backfill requires original conversion chunk length")
         writer = HydrogenBondStore(
-            workspace, trajectory, source_identity=manifest["identity"], frames=frames,
+            workspace, trajectory, source_topology=gro, source_identity=manifest["identity"], frames=frames,
             tpr=tpr, source_to_tpr=source_to_tpr, elements=elements,
             names=universe.atoms.names, resnames=universe.atoms.resnames,
             solvent_resnames=solvent_resnames, chunk_frames=size, periodic=periodic)

@@ -1,4 +1,4 @@
-"""GRO/PDB + XTC to an unaligned, unwrapped-independent heavy-atom base A."""
+"""GRO/PDB/TPR + XTC to an unaligned, unwrapped-independent heavy-atom base A."""
 
 from pathlib import Path
 from contextlib import contextmanager
@@ -9,6 +9,7 @@ import pyarrow as pa
 import zarr
 
 from .storage import atomic_json, atomic_parquet, digest, fingerprint, read_json
+from .input_validation import resolve_elements, validate_coordinate_pairing
 
 
 def position_chunk_frames(logical,atoms):
@@ -23,7 +24,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
             hbond_report=None):
     """Convert all frames, resuming only at committed Zarr chunk boundaries.
 
-    Solvent residue names are explicit for both GRO and PDB sources.
+    Solvent residue names are explicit for GRO, PDB and TPR sources.
     Optional atom_elements supplies one element for every *source* atom.
     Otherwise MDAnalysis guesses elements from names; this provenance is saved.
     No chemical bonds are inferred. Original selected coordinates and all box
@@ -35,19 +36,14 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
         raise TypeError("solvent_resnames must be a sequence of residue names")
     solvents = sorted(set(solvent_resnames))
     source_format = Path(gro).suffix.lower().lstrip(".")
-    if source_format not in ("gro", "pdb"):
-        raise ValueError("A source topology must be GRO or PDB")
+    if source_format not in ("gro", "pdb", "tpr"):
+        raise ValueError("A source topology must be GRO, PDB or TPR")
     source = {source_format: fingerprint(gro), "xtc": fingerprint(xtc)}
     with _universe(gro, xtc) as universe:
-        if atom_elements is None:
-            universe.guess_TopologyAttrs(to_guess=["elements"])
-            elements = np.asarray(universe.atoms.elements, dtype=str)
-            element_origin = "MDAnalysis name-based guess"
-        else:
-            elements = np.asarray(atom_elements, dtype=str)
-            element_origin = "caller supplied"
-        elements = np.array([value.strip().capitalize() for value in elements])
-        if elements.shape != (len(universe.atoms),) or np.any(elements == ""):
+        pairing = validate_coordinate_pairing(universe, gro)
+        elements, origins, element_states, element_check = resolve_elements(universe, atom_elements, solvent_resnames=solvents)
+        element_origin = "native/explicit/protein-name/name-guess (per atom in atoms.parquet)"
+        if elements.shape != (len(universe.atoms),):
             raise ValueError("A nonempty element is required for every source atom")
         selected = np.flatnonzero(
             ~np.isin(elements, ["H", "D", "T"]) & ~np.isin(universe.atoms.resnames, solvents)
@@ -73,7 +69,9 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
             else:
                 manifest = {"schema": 1, "identity": identity, "options": options,
                             source_format + "_path": str(Path(gro).resolve()), "xtc_path": str(Path(xtc).resolve()),
-                            "element_origin": element_origin, "frames": frames, "atoms": atoms,
+                            "element_origin": element_origin,
+                            "input_validation": {"pairing": pairing, "elements": element_check},
+                            "frames": frames, "atoms": atoms,
                             "committed_frames": 0, "status": "converting",
                             "coordinate_unit": "angstrom", "time_unit": "ps"}
                 manifest['coordinate_accuracy']={'status': 'experimental_approximate', 'family': 'exact_A', 'precision': 32, 'unit': 'angstrom', 'axis_error_bound': 0, 'coordinate_plane': 'originalbits', 'SASA': 'mixed:relative-float32-RN-GPU-points;float64-CPU-fallback-near0.01angstrom', 'descriptor_plane': 'SASAapprox;allothersoriginal', 'scientific_acceptance': False, 'near_coincident_policy': 'Any distinct atom pair distance<=0.01angstrom triggers originalCPU wholeframe; originaloverflow/coincident/otherguards maintained'}
@@ -99,6 +97,8 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
             atomic_parquet(path / "atoms.parquet", pa.table({
                 "point": np.arange(atoms), "source_atom": selected,
                 "name": ag.names.tolist(), "element": elements[selected].tolist(),
+                "element_origin": [origins[i] for i in selected],
+                "element_validation": [element_states[i] for i in selected],
                 "residue_index": ag.resindices, "residue_id": ag.resids,
                 "residue_name": ag.resnames.tolist(), "segment": ag.segids.tolist(),
             }))
@@ -107,7 +107,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                 try:
                     from .hydrogen_bonds import HydrogenBondStore
                     hb_writer = HydrogenBondStore(
-                        workspace, trajectory_id, source_identity=identity,
+                        workspace, trajectory_id, source_topology=gro, source_identity=identity,
                         frames=frames, tpr=hydrogen_bonds["tpr"],
                         source_to_tpr=hydrogen_bonds["source_to_tpr"],
                         elements=elements, names=universe.atoms.names,
@@ -182,7 +182,17 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                 elif hb_error is not None:
                     raise RuntimeError("A conversion completed, hydrogen bonds failed: " + hb_error)
         from .system_metadata import publish_conditions
-        publish_conditions(workspace, trajectory_id)
+        if source_format == "tpr":
+            # Full-system TPR+XTC uses an identity atom mapping. For stripped
+            # trajectories, use a matching GRO/PDB plus validated TPR mapping.
+            from .system_metadata import publish_molecules
+            publish_conditions(workspace, trajectory_id, tpr=gro)
+            mapping = list(range(len(universe.atoms)))
+            publish_molecules(workspace, trajectory_id, gro, mapping)
+            from .descriptors.bond_reconstruction import reconstruct_bonds
+            reconstruct_bonds(workspace, trajectory_id, gro, mapping)
+        else:
+            publish_conditions(workspace, trajectory_id)
         return trajectory_id
 
 

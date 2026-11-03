@@ -18,26 +18,32 @@ def _validate_jobs(jobs):
     if not isinstance(jobs, list) or not jobs:
         raise ValueError("jobs must be a nonempty list")
     normalized, destinations = [], set()
-    allowed = {"workspace", "gro", "xtc", "solvent_resnames", "trajectory_id",
+    allowed = {"workspace", "topology", "gro", "xtc", "solvent_resnames", "trajectory_id",
                "atom_elements", "annotation", "tpr", "source_to_tpr",
                "analysis", "estimated_work", "hydrogen_bonds"}
     for index, job in enumerate(jobs):
         if not isinstance(job, dict) or set(job) - allowed:
             raise ValueError("Unknown pipeline job fields")
-        for field in ("workspace", "gro", "xtc", "solvent_resnames", "analysis"):
+        for field in ("workspace", "xtc", "solvent_resnames", "analysis"):
             if field not in job:
                 raise ValueError(f"Missing pipeline field: {field}")
+        if ("gro" in job) == ("topology" in job):
+            raise ValueError("Provide exactly one topology path (TPR, GRO or PDB)")
         if not isinstance(job["analysis"], dict) or "coordinate_mode" not in job["analysis"]:
             raise ValueError("Each job must explicitly specify analysis.coordinate_mode")
         if not isinstance(job["solvent_resnames"], list) or not all(isinstance(x, str) for x in job["solvent_resnames"]):
             raise ValueError("solvent_resnames must be an explicit list of names")
         if ("tpr" in job) != ("source_to_tpr" in job):
-            raise ValueError("TPR bonds require an explicit source_to_tpr mapping")
+            raise ValueError("Additional TPR requires an explicit source_to_tpr mapping")
+        direct_tpr = Path(job.get("topology", job.get("gro"))).suffix.lower() == ".tpr"
+        if direct_tpr and "tpr" in job:
+            raise ValueError("Direct TPR topology cannot also specify an additional TPR")
         if "hydrogen_bonds" in job and type(job["hydrogen_bonds"]) is not bool:
             raise ValueError("hydrogen_bonds must be a boolean")
-        if job.get("hydrogen_bonds") and "tpr" not in job:
+        if job.get("hydrogen_bonds") and "tpr" not in job and not direct_tpr:
             raise ValueError("Hydrogen-bond reconstruction requires TPR and source_to_tpr")
         value = dict(job)
+        value["gro"] = value.pop("topology", value.get("gro"))
         for field in ("workspace", "gro", "xtc", "tpr"):
             if field in value:
                 value[field] = str(Path(value[field]).resolve())
@@ -72,7 +78,22 @@ def _pipeline(job):
 
     workspace = Workspace(job["workspace"])
     hb = {}
-    source = ({"tpr": job["tpr"], "source_to_tpr": job["source_to_tpr"],
+    topology = job["gro"]
+    direct_tpr = Path(topology).suffix.lower() == ".tpr"
+    tpr = job.get("tpr", topology if direct_tpr else None)
+    mapping = job.get("source_to_tpr")
+    if direct_tpr and job.get("hydrogen_bonds"):
+        import MDAnalysis as mda
+        u = mda.Universe(topology)
+        try:
+            mapping = list(range(len(u.atoms)))
+        finally:
+            if getattr(u, "trajectory", None) is not None:
+                u.trajectory.close()
+    if "tpr" in job:
+        from .atom_mapping import validate_source_mapping
+        validate_source_mapping(topology, tpr, mapping)
+    source = ({"tpr": tpr, "source_to_tpr": mapping,
                "periodic": job["analysis"]["coordinate_mode"] != "nonperiodic"}
               if job.get("hydrogen_bonds") else None)
     trajectory = convert(workspace, job["gro"], job["xtc"],
@@ -80,24 +101,32 @@ def _pipeline(job):
                          trajectory_id=job.get("trajectory_id"),
                          atom_elements=job.get("atom_elements"),
                          hydrogen_bonds=source, hbond_report=hb)
-    if "annotation" in job:
-        Registry(workspace).annotate(trajectory, **job["annotation"])
     edges = None
     if "tpr" in job:
         from .descriptors.bond_reconstruction import reconstruct_bonds
-        edges = reconstruct_bonds(workspace, trajectory, job["tpr"], job["source_to_tpr"])
+        edges = reconstruct_bonds(workspace, trajectory, tpr, mapping)
+    # Publish trusted topology connectivity *before* annotations so residue
+    # continuity can be checked against the actual TPR bond graph.
+    if "annotation" in job:
+        Registry(workspace).annotate(trajectory, **job["annotation"])
     from .system_metadata import publish_conditions, publish_molecules
     system_info = None
     try:
-        publish_conditions(workspace, trajectory, tpr=job.get("tpr"))
+        publish_conditions(workspace, trajectory, tpr=tpr)
         if "tpr" in job:
-            system_info = publish_molecules(workspace, trajectory, job["tpr"],
-                                            job["source_to_tpr"])
+            system_info = publish_molecules(workspace, trajectory, tpr, mapping)
+        elif direct_tpr:
+            system_info = "published_during_conversion"
     except Exception as exc:
         # Optional TPR metadata must not invalidate completed A/descriptors.
         system_info = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     report = analyze(workspace, trajectory, **job["analysis"])
-    status = "complete" if report["status"] == "complete" and hb.get("status", "complete") == "complete" else "incomplete"
+    # A requested/available TPR is part of the job contract. Do not report a
+    # successful pipeline if its static metadata publication failed.
+    status = ("complete" if (report["status"] == "complete"
+                             and hb.get("status", "complete") == "complete"
+                             and not (isinstance(system_info, dict) and system_info.get("status") == "failed"))
+              else "incomplete")
     catalog_storage = None
     if status == "complete":
         from .catalog_compaction import compact_catalog
