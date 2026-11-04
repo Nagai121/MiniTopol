@@ -1,0 +1,27 @@
+name: One-off Reader throughput benchmark
+on:
+  push:
+    branches: ["benchmark/reader-throughput-20261104"]
+    paths:
+      - "benchmarks/reader_provider_quick.py"
+      - ".github/workflows/reader-benchmark.yml"
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Nagai121/MiniTopol-reader
+          ref: main
+          path: reader-dependency
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install real MiniTopol reader and scientific dependencies
+        run: python -m pip install -e ".[acceleration,parallel]" pytest
+      - name: Measure first-read and cache-hit throughput
+        run: python benchmarks/reader_provider_quick.py
