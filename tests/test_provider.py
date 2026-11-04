@@ -31,10 +31,12 @@ def prepared(tmp_path, trajectory):
     store.publish(tid, global_desc, 0, 9,
                   pa.table({"point": [0, 1], "value": [1.5, 2.5]}))
     mixed = DescriptorDefinition("contacts", "test", "A", "mixed", "unit")
-    store.publish(tid, mixed, 0, 9,
-                  pa.table({"level": ["state", "state", "frequency"],
-                            "frame": pa.array([0, 8, None], type=pa.int64()),
-                            "value": [1., 1., .25]}))
+    mixed.register(workspace)
+    with store.dataset(tid, mixed, layout={"output_partitioning": "test"}) as writer:
+        writer.append("frames-0-9",
+                      pa.table({"level": ["state", "state", "frequency"],
+                                "frame": pa.array([0, 8, None], type=pa.int64()),
+                                "value": [1., 1., .25]}))
     return workspace, tid
 
 
