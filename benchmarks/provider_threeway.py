@@ -250,7 +250,9 @@ def main():
             "available_ram_gb": round(psutil.virtual_memory().available / 1e9, 2),
             "python": sys.version.split()[0],
             "strategies": STRATEGIES,
-            "replicates": 2,\n            "decoded_baseline_cap_mib": 64,\n            "decoded_wide_cap_mib": 256,
+            "replicates": 2,
+            "decoded_baseline_cap_mib": 64,
+            "decoded_wide_cap_mib": 256,
         }), flush=True)
         os.environ["MINITOPOL_PROVIDER_REGISTRY"] = str(root / "registration" / "provider.json")
         register(prepared["workspace"].path)
