@@ -274,13 +274,14 @@ def test_profile_append_existing_file_custom_path_and_failed_requests(prepared, 
         response = provider.get({"trajectory": tid, "coordinates": True, "frames": [0]})
         provider.cache.release(response["lease"])
         with pytest.raises(ValueError, match="Invalid request fields"):
-            provider.get({"trajectory": tid, "invalid": 123})
+            provider.get({"trajectory": tid, "invalid": object()})
         lines = _profile_lines(log)
         assert len(lines) == 3
         assert lines[0] == {"previous": True}
         assert lines[1]["status"] == "success"
         assert lines[2]["status"] == "failure"
         assert lines[2]["error_type"] == "ValueError"
+        assert lines[2]["request"] is None
         assert not (workspace.path / "provider-profile.txt").exists()
     finally:
         provider.cache.close()

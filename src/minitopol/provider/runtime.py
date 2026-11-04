@@ -94,6 +94,7 @@ class StageProfile:
     def __init__(self):
         self.nanoseconds = defaultdict(int)
         self.counters = defaultdict(int)
+        self.request_summary = None
 
     @contextmanager
     def phase(self, name):
@@ -352,12 +353,7 @@ class DataProvider:
                 "timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
                 "status": state,
                 "error_type": error,
-                "request": {
-                    "trajectory": request.get("trajectory"),
-                    "coordinates": request.get("coordinates", False),
-                    "descriptors": request.get("descriptors", []),
-                    "frames": trace.counters.get("requested_frames"),
-                } if isinstance(request, dict) else None,
+                "request": trace.request_summary,
                 "total_ms": round(total_ns / 1e6, 6),
                 "stages_ms": {k: round(v / 1e6, 6) for k, v in details.items()},
                 "counts": dict(trace.counters),
@@ -413,6 +409,14 @@ class DataProvider:
                 raise LookupError("No completed descriptors available")
         if set(descriptors) - available:
             raise LookupError("Missing completed descriptors: " + ", ".join(sorted(set(descriptors) - available)))
+        if trace is not None:
+            trace.request_summary = {
+                "trajectory": tid,
+                "coordinates": coords,
+                "descriptors": descriptors,
+                "frames": len(frames),
+                "atoms": (len(atoms) if atoms is not None else atoms_total) if coords else None,
+            }
         key = json.dumps([tid, frames, atoms, coords, descriptors], separators=(",", ":"))
 
         def build():
