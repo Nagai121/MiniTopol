@@ -177,7 +177,70 @@ class DataProvider:
     def __init__(self, workspace, budget):
         self.workspace = Workspace(workspace)
         self.registry = Registry(self.workspace)
-        self.cache = Cache(budget)
+        # Both caches share the single startup RAM allowance: no separate
+        # unaccounted private decoded cache is added to the 30% limit.
+        self.decoded_budget = min(64 * 1024**2, budget // 5)
+        self.decoded_used = 0
+        self.decoded_chunks = OrderedDict()
+        self.cache = Cache(budget - self.decoded_budget)
+
+    def _load_coordinates(self, trajectory, frames, selected, frame_count, manifest):
+        """Decode each source chunk at most once until its bounded LRU eviction.
+
+        This cache is scoped to Provider and indexed by immutable trajectory
+        identity, not by Reader requests. Distinct frame selections reuse source
+        decompression without requiring any Reader-visible protocol changes.
+        """
+        import zarr
+
+        out_positions = np.empty((len(frames), len(selected), 3), dtype="<f4")
+        out_time = np.empty(len(frames), dtype="<f8")
+        out_box = np.empty((len(frames), 3, 3), dtype="<f4")
+        chunk_size = manifest["options"]["chunk_frames"]
+        groups = {}
+        for output_index, frame in enumerate(frames):
+            groups.setdefault(frame // chunk_size, []).append((output_index, frame))
+
+        # File-system and Zarr format awareness remains exclusively here.
+        source = zarr.open_group(
+            str(self.workspace.trajectory_path(trajectory) / "A.zarr"), mode="r")
+        position_array, time_array, box_array = (
+            source["positions"], source["time"], source["box"])
+
+        # Cache.request owns its reentrant lock while calling this builder;
+        # the decoded-chunk LRU therefore has serialized mutations.
+        if psutil.virtual_memory().available < self.cache.budget // 4:
+            self.decoded_chunks.clear()
+            self.decoded_used = 0
+
+        for group_number, request_rows in sorted(groups.items()):
+            first = group_number * chunk_size
+            last = min(first + chunk_size, frame_count)
+            key = (trajectory, manifest["identity"], first, last)
+            cached = self.decoded_chunks.get(key)
+            if cached is None:
+                decoded = (position_array[first:last],
+                           time_array[first:last],
+                           box_array[first:last])
+                decoded_bytes = sum(array.nbytes for array in decoded)
+                if decoded_bytes <= self.decoded_budget:
+                    while self.decoded_used + decoded_bytes > self.decoded_budget:
+                        _, released = self.decoded_chunks.popitem(last=False)
+                        self.decoded_used -= sum(array.nbytes for array in released)
+                    self.decoded_chunks[key] = decoded
+                    self.decoded_used += decoded_bytes
+            else:
+                decoded = cached
+                self.decoded_chunks.move_to_end(key)
+
+            chunk_positions, chunk_time, chunk_box = decoded
+            destinations = np.fromiter((i for i, _ in request_rows), dtype=np.int64)
+            local_frames = np.fromiter((frame - first for _, frame in request_rows),
+                                       dtype=np.int64)
+            out_positions[destinations] = chunk_positions[local_frames][:, selected, :]
+            out_time[destinations] = chunk_time[local_frames]
+            out_box[destinations] = chunk_box[local_frames]
+        return out_positions, out_time, out_box
 
     def list_data(self):
         with self.workspace.catalog() as con:
@@ -249,22 +312,8 @@ class DataProvider:
             blocks = []
             if coords:
                 selected = atoms if atoms is not None else list(range(atoms_total))
-                positions = np.empty((len(frames), len(selected), 3), dtype="<f4")
-                times = np.empty(len(frames), dtype="<f8")
-                boxes = np.empty((len(frames), 3, 3), dtype="<f4")
-                chunk = manifest["options"]["chunk_frames"]
-                groups = {}
-                for output_index, frame in enumerate(frames):
-                    groups.setdefault(frame // chunk, []).append((output_index, frame))
-                for group_index, positions_in_group in sorted(groups.items()):
-                    first = group_index * chunk
-                    last = min(first + chunk, frames_total)
-                    block = next(self.registry.blocks(tid, start=first, stop=last, chunk_frames=last-first))
-                    for index, frame in positions_in_group:
-                        row = frame - first
-                        positions[index] = block.positions[row, selected, :]
-                        times[index] = block.time[row]
-                        boxes[index] = block.box[row]
+                positions, times, boxes = self._load_coordinates(
+                    tid, frames, selected, frames_total, manifest)
                 for name, array, unit in (("coordinates", positions, "angstrom"),
                                           ("time", times, "ps"), ("box", boxes, "angstrom")):
                     blocks.append(self._array(name, array, unit))
