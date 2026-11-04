@@ -152,3 +152,36 @@ def test_http_service_lifecycle(prepared, tmp_path, monkeypatch):
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("strategy", [
+    "reuse_open", "vectorized_chunks", "orthogonal_index",
+    "parallel_chunks", "decoded_chunk_lru"
+])
+def test_coordinate_strategy_preserves_raw_coordinates_and_metadata(prepared, monkeypatch, strategy):
+    workspace, tid = prepared
+    request = {"trajectory": tid, "coordinates": True,
+               "frames": [8, 0, 4, 1], "atoms": [1, 0], "descriptors": []}
+    monkeypatch.setenv("MINITOPOL_PROVIDER_READ_STRATEGY", "baseline")
+    baseline = DataProvider(workspace.path, budget=8 * 1024 * 1024)
+    try:
+        result = baseline.get(request)
+        expected = {part["name"]: _shm_data(part) for part in result["buffers"]}
+        baseline.cache.release(result["lease"])
+    finally:
+        baseline.cache.close()
+    monkeypatch.setenv("MINITOPOL_PROVIDER_READ_STRATEGY", strategy)
+    candidate = DataProvider(workspace.path, budget=8 * 1024 * 1024)
+    try:
+        result = candidate.get(request)
+        actual = {part["name"]: _shm_data(part) for part in result["buffers"]}
+        assert actual == expected
+        candidate.cache.release(result["lease"])
+        alt = candidate.get({**request, "frames": [7, 3, 2]})
+        assert {part["name"] for part in alt["buffers"]} == set(expected)
+        candidate.cache.release(alt["lease"])
+        assert candidate.cache.status()["active_leases"] == 0
+        assert candidate.cache.budget + candidate.decoded_budget == 8 * 1024 * 1024
+        assert candidate.decoded_used <= candidate.decoded_budget
+    finally:
+        candidate.cache.close()
