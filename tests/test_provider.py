@@ -202,3 +202,97 @@ def test_decoded_lru_eviction_is_bounded_and_reloads_correctly(prepared):
             assert len(provider.decoded_chunks) <= 1
     finally:
         provider.cache.close()
+
+
+def test_profile_stage_timing_cache_hits_and_reset(prepared, monkeypatch):
+    """Instrument actual Zarr/Arrow/SHM work, including both cache layers."""
+    workspace, tid = prepared
+    monkeypatch.setenv("MINITOPOL_PROVIDER_PROFILE", "1")
+    provider = DataProvider(workspace.path, 8 * 1024 * 1024)
+    try:
+        first = provider.get({"trajectory": tid, "coordinates": True,
+                              "frames": [0], "descriptors": ["sample"]})
+        provider.cache.release(first["lease"])
+        second = provider.get({"trajectory": tid, "coordinates": True,
+                               "frames": [1], "descriptors": ["sample"]})
+        provider.cache.release(second["lease"])
+        third = provider.get({"trajectory": tid, "coordinates": True,
+                              "frames": [1], "descriptors": ["sample"]})
+        provider.cache.release(third["lease"])
+        snapshot = provider.profile_snapshot()
+        assert snapshot["enabled"] is True
+        assert len(snapshot["records"]) == 3
+        miss, hit, exact = snapshot["records"]
+        for record in snapshot["records"]:
+            assert record["status"] == "success"
+            assert record["total_ms"] >= 0
+            assert all(t >= 0 for t in record["stages_ms"].values())
+        assert miss["counts"]["decoded_chunk_miss"] == 1
+        assert miss["counts"]["shared_cache_miss"] == 1
+        assert miss["stages_ms"]["zarr_fetch_and_decode"] >= 0
+        assert "descriptor_query" in miss["stages_ms"]
+        assert "shared_memory_copy" in miss["stages_ms"]
+        assert hit["counts"]["decoded_chunk_hit"] == 1
+        assert hit["counts"]["shared_cache_miss"] == 1
+        assert "zarr_fetch_and_decode" not in hit["stages_ms"]
+        assert exact["counts"]["shared_cache_hit"] == 1
+        assert "coordinate_extract_copy" not in exact["stages_ms"]
+        assert provider.clear_profiles()["cleared"]
+        assert provider.profile_snapshot()["records"] == []
+    finally:
+        provider.cache.close()
+
+
+def test_profile_disabled_by_default(prepared, monkeypatch):
+    workspace, tid = prepared
+    monkeypatch.delenv("MINITOPOL_PROVIDER_PROFILE", raising=False)
+    provider = DataProvider(workspace.path, 8 * 1024 * 1024)
+    try:
+        response = provider.get({"trajectory": tid, "coordinates": True, "frames": [0]})
+        provider.cache.release(response["lease"])
+        assert provider.profile_snapshot() == {
+            "enabled": False, "capacity": 256, "records": []}
+    finally:
+        provider.cache.close()
+
+
+def test_profile_http_endpoint(prepared, tmp_path, monkeypatch):
+    workspace, tid = prepared
+    destination = tmp_path / "profile-registration.json"
+    monkeypatch.setenv("MINITOPOL_PROVIDER_REGISTRY", str(destination))
+    monkeypatch.setenv("MINITOPOL_PROVIDER_PROFILE", "1")
+    register(workspace.path)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "minitopol.provider", "serve"],
+        env=os.environ.copy(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        session = None
+        for _ in range(100):
+            current = read_registry()
+            if current and current.get("session") and _probe(current["session"]):
+                session = current["session"]
+                break
+            if process.poll() is not None:
+                break
+            time.sleep(.1)
+        assert session is not None, process.communicate(timeout=3)
+        base = f"http://127.0.0.1:{session['port']}/v1"
+        headers = {"Authorization": "Bearer " + session["token"]}
+        def call(route, body=None):
+            data = None if body is None else json.dumps(body).encode()
+            req = Request(base + route, data=data, headers=headers)
+            with urlopen(req, timeout=15) as response:
+                return json.load(response)
+        assert call("/profile")["enabled"]
+        fetched = call("/get", {"trajectory": tid, "coordinates": True, "frames": [0]})
+        assert len(call("/profile")["records"]) == 1
+        assert call("/profile/reset", {})["cleared"] is True
+        assert call("/profile")["records"] == []
+        assert call("/release", {"lease": fetched["lease"]})["released"]
+        assert call("/stop", {})["stopping"]
+        process.wait(timeout=15)
+        assert process.returncode == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)

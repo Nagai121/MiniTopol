@@ -10,7 +10,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque, defaultdict
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from multiprocessing import shared_memory
 
@@ -85,6 +86,36 @@ def _probe(session):
         return False
 
 
+
+class StageProfile:
+    """Per-request wall-clock stages. Stage durations exclude unrelated phases."""
+
+    def __init__(self):
+        self.nanoseconds = defaultdict(int)
+        self.counters = defaultdict(int)
+
+    @contextmanager
+    def phase(self, name):
+        started = time.perf_counter_ns()
+        try:
+            yield
+        finally:
+            self.nanoseconds[name] += time.perf_counter_ns() - started
+
+    def increment(self, name, count=1):
+        self.counters[name] += count
+
+
+@contextmanager
+def _stage(trace, name):
+    # Profiling is off by default and does not change existing API results.
+    if trace is None:
+        yield
+    else:
+        with trace.phase(name):
+            yield
+
+
 class Cache:
     """Lease-pinned, LRU shared-memory cache bounded by startup available RAM."""
 
@@ -109,8 +140,12 @@ class Cache:
             self.used -= entry["size"]
             del self.entries[key]
 
-    def request(self, key, builder):
+    def request(self, key, builder, trace=None):
+        lock_start = time.perf_counter_ns() if trace is not None else None
         with self.lock:
+            if trace is not None:
+                trace.nanoseconds["shared_cache_lock_wait"] += time.perf_counter_ns() - lock_start
+                trace.increment("shared_cache_miss" if key not in self.entries else "shared_cache_hit")
             if key not in self.entries:
                 self.misses += 1
                 # Build outside shared memory, then publish atomically.
@@ -124,9 +159,13 @@ class Cache:
                 segments, metadata = [], []
                 try:
                     for name, payload, spec in blocks:
-                        segment = shared_memory.SharedMemory(create=True, size=max(1, len(payload)))
+                        with _stage(trace, "shared_memory_allocate"):
+                            segment = shared_memory.SharedMemory(create=True, size=max(1, len(payload)))
                         segments.append(segment)
-                        segment.buf[:len(payload)] = payload
+                        with _stage(trace, "shared_memory_copy"):
+                            segment.buf[:len(payload)] = payload
+                        if trace is not None:
+                            trace.increment("shared_memory_bytes", len(payload))
                         metadata.append({"name": name, "shm": segment.name, "bytes": len(payload), **spec})
                 except BaseException:
                     for segment in segments:
@@ -183,8 +222,22 @@ class DataProvider:
         self.decoded_used = 0
         self.decoded_chunks = OrderedDict()
         self.cache = Cache(budget - self.decoded_budget)
+        self.profiling_enabled = os.environ.get("MINITOPOL_PROVIDER_PROFILE") == "1"
+        self.profile_records = deque(maxlen=256)
+        self.profile_lock = threading.Lock()
 
-    def _load_coordinates(self, trajectory, frames, selected, frame_count, manifest):
+    def profile_snapshot(self):
+        with self.profile_lock:
+            return {"enabled": self.profiling_enabled,
+                    "capacity": self.profile_records.maxlen,
+                    "records": list(self.profile_records)}
+
+    def clear_profiles(self):
+        with self.profile_lock:
+            self.profile_records.clear()
+        return {"cleared": True}
+
+    def _load_coordinates(self, trajectory, frames, selected, frame_count, manifest, trace=None):
         """Decode each source chunk at most once until its bounded LRU eviction.
 
         This cache is scoped to Provider and indexed by immutable trajectory
@@ -193,20 +246,21 @@ class DataProvider:
         """
         import zarr
 
-        out_positions = np.empty((len(frames), len(selected), 3), dtype="<f4")
-        out_time = np.empty(len(frames), dtype="<f8")
-        out_box = np.empty((len(frames), 3, 3), dtype="<f4")
-        # File-system and Zarr format awareness remains exclusively here.
-        source = zarr.open_group(
-            str(self.workspace.trajectory_path(trajectory) / "A.zarr"), mode="r")
-        position_array, time_array, box_array = (
-            source["positions"], source["time"], source["box"])
-        # Physical AGX chunks can be smaller than the logical converter batch.
-        # Cache/decompress at the actual stored position-chunk boundary.
-        chunk_size = int(position_array.chunks[0])
-        groups = {}
-        for output_index, frame in enumerate(frames):
-            groups.setdefault(frame // chunk_size, []).append((output_index, frame))
+        with _stage(trace, "output_array_allocate"):
+            out_positions = np.empty((len(frames), len(selected), 3), dtype="<f4")
+            out_time = np.empty(len(frames), dtype="<f8")
+            out_box = np.empty((len(frames), 3, 3), dtype="<f4")
+        # Zarr indexing below includes storage access AND codec decode.
+        with _stage(trace, "zarr_open_metadata"):
+            source = zarr.open_group(
+                str(self.workspace.trajectory_path(trajectory) / "A.zarr"), mode="r")
+            position_array, time_array, box_array = (
+                source["positions"], source["time"], source["box"])
+            chunk_size = int(position_array.chunks[0])
+        with _stage(trace, "chunk_grouping"):
+            groups = {}
+            for output_index, frame in enumerate(frames):
+                groups.setdefault(frame // chunk_size, []).append((output_index, frame))
 
         # Cache.request owns its reentrant lock while calling this builder;
         # the decoded-chunk LRU therefore has serialized mutations.
@@ -219,11 +273,16 @@ class DataProvider:
             last = min(first + chunk_size, frame_count)
             key = (trajectory, manifest["identity"], first, last)
             cached = self.decoded_chunks.get(key)
+            if trace is not None:
+                trace.increment("decoded_chunk_miss" if cached is None else "decoded_chunk_hit")
             if cached is None:
-                decoded = (position_array[first:last],
-                           time_array[first:last],
-                           box_array[first:last])
+                with _stage(trace, "zarr_fetch_and_decode"):
+                    decoded = (position_array[first:last],
+                               time_array[first:last],
+                               box_array[first:last])
                 decoded_bytes = sum(array.nbytes for array in decoded)
+                if trace is not None:
+                    trace.increment("decoded_source_bytes", decoded_bytes)
                 if decoded_bytes <= self.decoded_budget:
                     while self.decoded_used + decoded_bytes > self.decoded_budget:
                         _, released = self.decoded_chunks.popitem(last=False)
@@ -234,13 +293,14 @@ class DataProvider:
                 decoded = cached
                 self.decoded_chunks.move_to_end(key)
 
-            chunk_positions, chunk_time, chunk_box = decoded
-            destinations = np.fromiter((i for i, _ in request_rows), dtype=np.int64)
-            local_frames = np.fromiter((frame - first for _, frame in request_rows),
-                                       dtype=np.int64)
-            out_positions[destinations] = chunk_positions[local_frames][:, selected, :]
-            out_time[destinations] = chunk_time[local_frames]
-            out_box[destinations] = chunk_box[local_frames]
+            with _stage(trace, "coordinate_extract_copy"):
+                chunk_positions, chunk_time, chunk_box = decoded
+                destinations = np.fromiter((i for i, _ in request_rows), dtype=np.int64)
+                local_frames = np.fromiter((frame - first for _, frame in request_rows),
+                                           dtype=np.int64)
+                out_positions[destinations] = chunk_positions[local_frames][:, selected, :]
+                out_time[destinations] = chunk_time[local_frames]
+                out_box[destinations] = chunk_box[local_frames]
         return out_positions, out_time, out_box
 
     def list_data(self):
@@ -264,13 +324,40 @@ class DataProvider:
         return items
 
     def get(self, request):
+        if not self.profiling_enabled:
+            return self._get(request, None)
+        trace = StageProfile()
+        started = time.perf_counter_ns()
+        state, error = "success", None
+        try:
+            return self._get(request, trace)
+        except BaseException as exc:
+            state, error = "failure", type(exc).__name__
+            raise
+        finally:
+            total_ns = time.perf_counter_ns() - started
+            details = dict(trace.nanoseconds)
+            measured_ns = sum(details.values())
+            details["other_provider_work"] = max(0, total_ns - measured_ns)
+            record = {
+                "status": state,
+                "error_type": error,
+                "total_ms": round(total_ns / 1e6, 6),
+                "stages_ms": {k: round(v / 1e6, 6) for k, v in details.items()},
+                "counts": dict(trace.counters),
+            }
+            with self.profile_lock:
+                self.profile_records.append(record)
+
+    def _get(self, request, trace):
         if not isinstance(request, dict) or set(request) - {"trajectory", "frames", "start", "stop",
                                                            "atoms", "coordinates", "descriptors"}:
             raise ValueError("Invalid request fields")
         tid = request.get("trajectory")
         if not isinstance(tid, str):
             raise ValueError("trajectory must be a string")
-        manifest = self.registry.manifest(tid)
+        with _stage(trace, "manifest_lookup"):
+            manifest = self.registry.manifest(tid)
         frames_total, atoms_total = manifest["frames"], manifest["atoms"]
         if "frames" in request and ("start" in request or "stop" in request):
             raise ValueError("Supply frames or start/stop, not both")
@@ -298,9 +385,10 @@ class DataProvider:
             raise ValueError("Invalid descriptor selection")
         if not coords and not descriptors:
             raise ValueError("Request coordinates, descriptors, or both")
-        with self.workspace.catalog() as con:
-            available = {row[0] for row in con.execute(
-                "SELECT DISTINCT descriptor FROM results WHERE trajectory=?", [tid]).fetchall()}
+        with _stage(trace, "descriptor_catalog_lookup"):
+            with self.workspace.catalog() as con:
+                available = {row[0] for row in con.execute(
+                    "SELECT DISTINCT descriptor FROM results WHERE trajectory=?", [tid]).fetchall()}
         if descriptors == ["all"]:
             descriptors = sorted(available)
             if not descriptors:
@@ -314,22 +402,29 @@ class DataProvider:
             if coords:
                 selected = atoms if atoms is not None else list(range(atoms_total))
                 positions, times, boxes = self._load_coordinates(
-                    tid, frames, selected, frames_total, manifest)
+                    tid, frames, selected, frames_total, manifest, trace=trace)
+                if trace is not None:
+                    trace.increment("requested_atom_frames", len(frames) * len(selected))
                 for name, array, unit in (("coordinates", positions, "angstrom"),
                                           ("time", times, "ps"), ("box", boxes, "angstrom")):
-                    blocks.append(self._array(name, array, unit))
+                    with _stage(trace, "coordinate_serialization"):
+                        blocks.append(self._array(name, array, unit))
             for name in descriptors:
-                table = self._descriptor(tid, name, frames)
-                sink = pa.BufferOutputStream()
-                with pa.ipc.new_stream(sink, table.schema) as writer:
-                    writer.write_table(table)
-                data = sink.getvalue().to_pybytes()
+                with _stage(trace, "descriptor_query"):
+                    table = self._descriptor(tid, name, frames)
+                with _stage(trace, "descriptor_arrow_encode"):
+                    sink = pa.BufferOutputStream()
+                    with pa.ipc.new_stream(sink, table.schema) as writer:
+                        writer.write_table(table)
+                    data = sink.getvalue().to_pybytes()
+                if trace is not None:
+                    trace.increment("descriptor_rows", table.num_rows)
                 blocks.append(("descriptor:" + name, data,
                                {"format": "arrow-ipc", "rows": table.num_rows,
                                 "scope": "global" if name in GLOBAL_DESCRIPTORS else "frame-or-mixed"}))
             return blocks
 
-        return {**self.cache.request(key, build), "trajectory": tid, "frames": frames,
+        return {**self.cache.request(key, build, trace=trace), "trajectory": tid, "frames": frames,
                 "atoms": atoms, "coordinates": coords, "descriptors": descriptors}
 
     @staticmethod
@@ -393,6 +488,8 @@ class Handler(BaseHTTPRequestHandler):
                                         **self.server.provider.cache.status()})
             if self.path == "/v1/list":
                 return self._send(200, self.server.provider.list_data())
+            if self.path == "/v1/profile":
+                return self._send(200, self.server.provider.profile_snapshot())
             return self._send(404, {"error": "Unknown route"})
         if self.command != "POST":
             return self._send(405, {"error": "Method not allowed"})
@@ -404,6 +501,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, self.server.provider.get(payload))
         if self.path == "/v1/release":
             return self._send(200, self.server.provider.cache.release(payload["lease"]))
+        if self.path == "/v1/profile/reset":
+            return self._send(200, self.server.provider.clear_profiles())
         if self.path == "/v1/stop":
             if self.server.provider.cache.status()["active_leases"]:
                 return self._send(409, {"error": "Release active leases before stopping Provider"})
@@ -472,16 +571,38 @@ def serve():
     return 0
 
 
+
+def _profile_cli(reset=False):
+    from urllib.request import Request, urlopen
+    config = read_registry() or {}
+    session = config.get("session")
+    if not session or not _probe(session):
+        raise RuntimeError("Provider is not running")
+    route = "/v1/profile/reset" if reset else "/v1/profile"
+    req = Request(
+        f"http://127.0.0.1:{session['port']}{route}",
+        headers={"Authorization": "Bearer " + session["token"],
+                 "Content-Type": "application/json"},
+        data=b"{}" if reset else None,
+        method="POST" if reset else "GET")
+    with urlopen(req, timeout=10) as response:
+        return json.load(response)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m minitopol.provider")
     sub = parser.add_subparsers(dest="command", required=True)
     registration = sub.add_parser("register", help="Register this installation and a Workspace")
     registration.add_argument("--workspace", default=None)
     sub.add_parser("serve", help="Run one shared local Provider process")
+    profile = sub.add_parser("profile", help="Show bounded per-request Provider timings")
+    profile.add_argument("--reset", action="store_true", help="Clear recorded timings")
     args = parser.parse_args(argv)
     if args.command == "register":
         workspace = args.workspace or Workspace.default_path()
         print(json.dumps(register(workspace), ensure_ascii=False))
+    elif args.command == "profile":
+        print(json.dumps(_profile_cli(args.reset), ensure_ascii=False, indent=2))
     else:
         return serve()
     return 0
