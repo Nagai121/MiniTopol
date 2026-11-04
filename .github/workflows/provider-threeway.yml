@@ -1,0 +1,30 @@
+name: Provider three-optimization comparison
+on:
+  push:
+    branches: ["experiment/provider-three-optimizations"]
+    paths:
+      - "benchmarks/provider_threeway.py"
+      - "src/minitopol/provider/runtime.py"
+      - ".github/workflows/provider-threeway.yml"
+  workflow_dispatch:
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Nagai121/MiniTopol-reader
+          ref: main
+          path: reader-dependency
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install MiniTopol and test dependencies
+        run: python -m pip install -e ".[test,acceleration,parallel]"
+      - name: Verify Provider semantics before timing
+        run: python -m pytest -q tests/test_provider.py
+      - name: Measure baseline and three optimizations on real AGX3 and Reader
+        run: python -u benchmarks/provider_threeway.py

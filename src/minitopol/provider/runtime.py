@@ -96,6 +96,7 @@ class Cache:
         self.hits = 0
         self.misses = 0
         self.lock = threading.RLock()
+        self.optimization = os.environ.get("MINITOPOL_PROVIDER_OPTIMIZATION", "lru_base")
 
     def _evict(self, needed):
         for key, entry in list(self.entries.items()):
@@ -109,7 +110,59 @@ class Cache:
             self.used -= entry["size"]
             del self.entries[key]
 
+
+    def _lease_locked(self, key):
+        self.entries.move_to_end(key)
+        lease = secrets.token_urlsafe(24)
+        self.entries[key]["leases"].add(lease)
+        self.leases[lease] = key
+        return {"lease": lease, "buffers": self.entries[key]["metadata"],
+                "cache_bytes": self.used, "budget_bytes": self.budget}
+
+    def _request_parallel(self, key, builder):
+        # Experiment: only key lookups / publication hold the shared cache lock.
+        # Two simultaneous identical misses may compute duplicate candidates;
+        # the second discards its candidate and leases the first result.
+        with self.lock:
+            if key in self.entries:
+                self.hits += 1
+                return self._lease_locked(key)
+        blocks = builder()
+        with self.lock:
+            if key in self.entries:
+                self.hits += 1
+                return self._lease_locked(key)
+            self.misses += 1
+            needed = sum(len(payload) for _, payload, _ in blocks)
+            if needed > self.budget:
+                raise MemoryError("Requested data exceeds the Provider shared-cache budget; request fewer frames")
+            self._evict(needed)
+            if self.used + needed > self.budget:
+                raise MemoryError("Shared cache is pinned by active leases; release unused data")
+            segments, metadata = [], []
+            try:
+                for name, payload, spec in blocks:
+                    segment = shared_memory.SharedMemory(create=True, size=max(1, len(payload)))
+                    segments.append(segment)
+                    segment.buf[:len(payload)] = payload
+                    metadata.append({"name": name, "shm": segment.name,
+                                     "bytes": len(payload), **spec})
+            except BaseException:
+                for segment in segments:
+                    segment.close()
+                    segment.unlink()
+                raise
+            self.entries[key] = {"segments": segments, "metadata": metadata,
+                                 "size": needed, "leases": set()}
+            self.used += needed
+            return self._lease_locked(key)
+
     def request(self, key, builder):
+        if self.optimization == "parallel_miss":
+            return self._request_parallel(key, builder)
+        return self._request_serial(key, builder)
+
+    def _request_serial(self, key, builder):
         with self.lock:
             if key not in self.entries:
                 self.misses += 1
@@ -179,10 +232,38 @@ class DataProvider:
         self.registry = Registry(self.workspace)
         # Both caches share the single startup RAM allowance: no separate
         # unaccounted private decoded cache is added to the 30% limit.
-        self.decoded_budget = min(64 * 1024**2, budget // 5)
+        self.optimization = os.environ.get("MINITOPOL_PROVIDER_OPTIMIZATION", "lru_base")
+        # Experiment modes are exclusive to isolate their throughput effects.
+        self.decoded_budget = (min(256 * 1024**2, budget // 3)
+                               if self.optimization == "wide_cache"
+                               else min(64 * 1024**2, budget // 5))
         self.decoded_used = 0
         self.decoded_chunks = OrderedDict()
+        self.decoded_lock = threading.RLock()
         self.cache = Cache(budget - self.decoded_budget)
+
+
+    def _parallel_decode_chunk(self, key, position_array, time_array, box_array, first, last):
+        # Prevent LRU races but do the potentially slow I/O/decode outside lock.
+        with self.decoded_lock:
+            cached = self.decoded_chunks.get(key)
+            if cached is not None:
+                self.decoded_chunks.move_to_end(key)
+                return cached
+        decoded = (position_array[first:last], time_array[first:last], box_array[first:last])
+        size = sum(part.nbytes for part in decoded)
+        with self.decoded_lock:
+            cached = self.decoded_chunks.get(key)
+            if cached is not None:
+                self.decoded_chunks.move_to_end(key)
+                return cached
+            if size <= self.decoded_budget:
+                while self.decoded_used + size > self.decoded_budget:
+                    _, released = self.decoded_chunks.popitem(last=False)
+                    self.decoded_used -= sum(part.nbytes for part in released)
+                self.decoded_chunks[key] = decoded
+                self.decoded_used += size
+            return decoded
 
     def _load_coordinates(self, trajectory, frames, selected, frame_count, manifest):
         """Decode each source chunk at most once until its bounded LRU eviction.
@@ -210,7 +291,12 @@ class DataProvider:
 
         # Cache.request owns its reentrant lock while calling this builder;
         # the decoded-chunk LRU therefore has serialized mutations.
-        if psutil.virtual_memory().available < self.cache.budget // 4:
+        if self.optimization == "parallel_miss":
+            with self.decoded_lock:
+                if psutil.virtual_memory().available < self.cache.budget // 4:
+                    self.decoded_chunks.clear()
+                    self.decoded_used = 0
+        elif psutil.virtual_memory().available < self.cache.budget // 4:
             self.decoded_chunks.clear()
             self.decoded_used = 0
 
@@ -218,27 +304,37 @@ class DataProvider:
             first = group_number * chunk_size
             last = min(first + chunk_size, frame_count)
             key = (trajectory, manifest["identity"], first, last)
-            cached = self.decoded_chunks.get(key)
-            if cached is None:
-                decoded = (position_array[first:last],
-                           time_array[first:last],
-                           box_array[first:last])
-                decoded_bytes = sum(array.nbytes for array in decoded)
-                if decoded_bytes <= self.decoded_budget:
-                    while self.decoded_used + decoded_bytes > self.decoded_budget:
-                        _, released = self.decoded_chunks.popitem(last=False)
-                        self.decoded_used -= sum(array.nbytes for array in released)
-                    self.decoded_chunks[key] = decoded
-                    self.decoded_used += decoded_bytes
+            if self.optimization == "parallel_miss":
+                decoded = self._parallel_decode_chunk(
+                    key, position_array, time_array, box_array, first, last)
             else:
-                decoded = cached
-                self.decoded_chunks.move_to_end(key)
+                cached = self.decoded_chunks.get(key)
+                if cached is None:
+                    decoded = (position_array[first:last],
+                               time_array[first:last],
+                               box_array[first:last])
+                    decoded_bytes = sum(array.nbytes for array in decoded)
+                    if decoded_bytes <= self.decoded_budget:
+                        while self.decoded_used + decoded_bytes > self.decoded_budget:
+                            _, released = self.decoded_chunks.popitem(last=False)
+                            self.decoded_used -= sum(array.nbytes for array in released)
+                        self.decoded_chunks[key] = decoded
+                        self.decoded_used += decoded_bytes
+                else:
+                    decoded = cached
+                    self.decoded_chunks.move_to_end(key)
 
             chunk_positions, chunk_time, chunk_box = decoded
             destinations = np.fromiter((i for i, _ in request_rows), dtype=np.int64)
             local_frames = np.fromiter((frame - first for _, frame in request_rows),
                                        dtype=np.int64)
-            out_positions[destinations] = chunk_positions[local_frames][:, selected, :]
+            if self.optimization == "single_gather":
+                # One advanced-index gather instead of two intermediate arrays.
+                indices = np.asarray(selected, dtype=np.intp)
+                out_positions[destinations] = chunk_positions[
+                    local_frames[:, None], indices[None, :], :]
+            else:
+                out_positions[destinations] = chunk_positions[local_frames][:, selected, :]
             out_time[destinations] = chunk_time[local_frames]
             out_box[destinations] = chunk_box[local_frames]
         return out_positions, out_time, out_box
