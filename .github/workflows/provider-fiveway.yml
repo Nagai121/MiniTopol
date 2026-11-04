@@ -1,0 +1,28 @@
+name: One-off five-way Provider read comparison
+on:
+  push:
+    branches: ["experiment/provider-five-strategies"]
+    paths:
+      - "benchmarks/provider_fiveway.py"
+      - "src/minitopol/provider/runtime.py"
+      - ".github/workflows/provider-fiveway.yml"
+  workflow_dispatch:
+
+jobs:
+  five-way:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Nagai121/MiniTopol-reader
+          ref: main
+          path: reader-dependency
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install MiniTopol with its accelerated scientific codec
+        run: python -m pip install -e ".[acceleration,parallel]"
+      - name: Measure baseline and five strategies with real Reader client
+        run: python benchmarks/provider_fiveway.py
