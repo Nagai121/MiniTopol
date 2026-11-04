@@ -177,7 +177,99 @@ class DataProvider:
     def __init__(self, workspace, budget):
         self.workspace = Workspace(workspace)
         self.registry = Registry(self.workspace)
-        self.cache = Cache(budget)
+        self.coordinate_strategy = os.environ.get("MINITOPOL_PROVIDER_READ_STRATEGY", "baseline")
+        supported = {"baseline", "reuse_open", "vectorized_chunks",
+                     "orthogonal_index", "parallel_chunks", "decoded_chunk_lru"}
+        if self.coordinate_strategy not in supported:
+            raise ValueError("Unknown experimental read strategy")
+        self.decoded_budget = min(64 * 1024**2, budget // 5) if self.coordinate_strategy == "decoded_chunk_lru" else 0
+        self.decoded_used = 0
+        self.decoded_chunks = OrderedDict()
+        # Decoded arrays count toward the SAME startup RAM cap as shared buffers.
+        self.cache = Cache(budget - self.decoded_budget)
+
+    def _load_coordinates(self, tid, frames, selected, frames_total, atoms_total, manifest):
+        """Experimental coordinate loaders, each preserving the source A semantics.
+
+        Selections and frame order remain request-defined. All variants return
+        the same three arrays and must pass the byte-identical reference tests.
+        """
+        positions = np.empty((len(frames), len(selected), 3), dtype="<f4")
+        times = np.empty(len(frames), dtype="<f8")
+        boxes = np.empty((len(frames), 3, 3), dtype="<f4")
+        chunk = manifest["options"]["chunk_frames"]
+        groups = {}
+        for out_index, frame in enumerate(frames):
+            groups.setdefault(frame // chunk, []).append((out_index, frame))
+        strategy = self.coordinate_strategy
+        if strategy == "baseline":
+            for group_index, items in sorted(groups.items()):
+                first = group_index * chunk
+                last = min(first + chunk, frames_total)
+                block = next(self.registry.blocks(tid, start=first, stop=last,
+                                                  chunk_frames=last-first))
+                for index, frame in items:
+                    row = frame - first
+                    positions[index] = block.positions[row, selected, :]
+                    times[index] = block.time[row]
+                    boxes[index] = block.box[row]
+            return positions, times, boxes
+
+        import zarr
+        source = zarr.open_group(str(self.workspace.trajectory_path(tid) / "A.zarr"), mode="r")
+        pos_array, time_array, box_array = (source["positions"], source["time"], source["box"])
+
+        if strategy == "orthogonal_index":
+            order = np.asarray(frames, dtype=np.int64)
+            raw = pos_array.oindex[order, :, :]
+            positions[:] = raw[:, selected, :]
+            times[:] = time_array.oindex[order]
+            boxes[:] = box_array.oindex[order, :, :]
+            return positions, times, boxes
+
+        def load_chunk(group_index):
+            first = group_index * chunk
+            last = min(first + chunk, frames_total)
+            key = (tid, manifest["identity"], first, last)
+            if strategy == "decoded_chunk_lru":
+                hit = self.decoded_chunks.get(key)
+                if hit is not None:
+                    self.decoded_chunks.move_to_end(key)
+                    return first, hit
+            data = (pos_array[first:last], time_array[first:last], box_array[first:last])
+            if strategy == "decoded_chunk_lru":
+                needed = sum(x.nbytes for x in data)
+                if needed <= self.decoded_budget:
+                    while self.decoded_used + needed > self.decoded_budget and self.decoded_chunks:
+                        _, removed = self.decoded_chunks.popitem(last=False)
+                        self.decoded_used -= sum(x.nbytes for x in removed)
+                    self.decoded_chunks[key] = data
+                    self.decoded_used += needed
+            return first, data
+
+        indices = sorted(groups)
+        if strategy == "parallel_chunks":
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                loaded = list(executor.map(load_chunk, indices))
+        else:
+            loaded = [load_chunk(group_index) for group_index in indices]
+        for group_index, (first, data) in zip(indices, loaded):
+            all_coordinates, all_time, all_boxes = data
+            items = groups[group_index]
+            if strategy == "reuse_open":
+                for output_index, frame in items:
+                    row = frame - first
+                    positions[output_index] = all_coordinates[row, selected, :]
+                    times[output_index] = all_time[row]
+                    boxes[output_index] = all_boxes[row]
+            else:
+                destinations = np.fromiter((x[0] for x in items), dtype=np.int64)
+                row_indices = np.fromiter((x[1]-first for x in items), dtype=np.int64)
+                positions[destinations] = all_coordinates[row_indices][:, selected, :]
+                times[destinations] = all_time[row_indices]
+                boxes[destinations] = all_boxes[row_indices]
+        return positions, times, boxes
 
     def list_data(self):
         with self.workspace.catalog() as con:
@@ -249,22 +341,8 @@ class DataProvider:
             blocks = []
             if coords:
                 selected = atoms if atoms is not None else list(range(atoms_total))
-                positions = np.empty((len(frames), len(selected), 3), dtype="<f4")
-                times = np.empty(len(frames), dtype="<f8")
-                boxes = np.empty((len(frames), 3, 3), dtype="<f4")
-                chunk = manifest["options"]["chunk_frames"]
-                groups = {}
-                for output_index, frame in enumerate(frames):
-                    groups.setdefault(frame // chunk, []).append((output_index, frame))
-                for group_index, positions_in_group in sorted(groups.items()):
-                    first = group_index * chunk
-                    last = min(first + chunk, frames_total)
-                    block = next(self.registry.blocks(tid, start=first, stop=last, chunk_frames=last-first))
-                    for index, frame in positions_in_group:
-                        row = frame - first
-                        positions[index] = block.positions[row, selected, :]
-                        times[index] = block.time[row]
-                        boxes[index] = block.box[row]
+                positions, times, boxes = self._load_coordinates(
+                    tid, frames, selected, frames_total, atoms_total, manifest)
                 for name, array, unit in (("coordinates", positions, "angstrom"),
                                           ("time", times, "ps"), ("box", boxes, "angstrom")):
                     blocks.append(self._array(name, array, unit))
