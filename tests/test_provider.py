@@ -332,3 +332,50 @@ def test_profile_http_request_writes_txt(prepared, tmp_path, monkeypatch):
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
+
+
+def test_provider_refreshes_cached_descriptor_after_new_publication(prepared):
+    """Publishing another result for the same descriptor invalidates old SHM keys."""
+    workspace, tid = prepared
+    provider = DataProvider(workspace.path, 8 * 1024 * 1024)
+    query = {"trajectory": tid, "frames": [0], "descriptors": ["sample"]}
+
+    def values(response):
+        part = next(x for x in response["buffers"] if x["name"] == "descriptor:sample")
+        return pa.ipc.open_stream(pa.BufferReader(_shm_data(part))).read_all()["value"].to_pylist()
+
+    try:
+        original = provider.get(query)
+        assert values(original) == [10.0]
+        duplicate = provider.get(query)
+        assert provider.cache.hits == 1
+        provider.cache.release(duplicate["lease"])
+
+        updated = DescriptorDefinition("sample", "2", "A", "new result", "unit")
+        ResultStore(workspace).publish(
+            tid, updated, 0, 9,
+            pa.table({"frame": pa.array([0], type=pa.int64()),
+                      "value": pa.array([99.0])}))
+
+        refreshed = provider.get(query)
+        assert sorted(values(refreshed)) == [10.0, 99.0]
+        assert provider.cache.misses == 2
+        # A response held under an existing lease remains valid and unchanged.
+        assert values(original) == [10.0]
+        provider.cache.release(original["lease"])
+        provider.cache.release(refreshed["lease"])
+    finally:
+        provider.cache.close()
+
+
+def test_workspace_frame_range_on_global_descriptor(prepared):
+    """Frame-less aggregate descriptors ignore frame filters, not fail SQL."""
+    workspace, tid = prepared
+    aggregate = workspace.query_results(
+        descriptor="rmsf", trajectory=tid, start=3, stop=4)
+    assert aggregate["value"].to_pylist() == [1.5, 2.5]
+
+    # Ordinary frame-bearing descriptors keep the original range filtering.
+    frame_data = workspace.query_results(
+        descriptor="sample", trajectory=tid, start=2, stop=3)
+    assert frame_data["value"].to_pylist() == [20.0]

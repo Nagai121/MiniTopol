@@ -401,8 +401,12 @@ class DataProvider:
             trace.increment("requested_frames", len(frames))
         with _stage(trace, "descriptor_catalog_lookup"):
             with self.workspace.catalog() as con:
-                available = {row[0] for row in con.execute(
-                    "SELECT DISTINCT descriptor FROM results WHERE trajectory=?", [tid]).fetchall()}
+                # Result IDs identify immutable descriptor partitions. Their
+                # set versions responses when fresh results are published.
+                catalog_rows = con.execute(
+                    "SELECT descriptor, id FROM results WHERE trajectory=? "
+                    "ORDER BY descriptor, id", [tid]).fetchall()
+                available = {name for name, _ in catalog_rows}
         if descriptors == ["all"]:
             descriptors = sorted(available)
             if not descriptors:
@@ -417,7 +421,11 @@ class DataProvider:
                 "frames": len(frames),
                 "atoms": (len(atoms) if atoms is not None else atoms_total) if coords else None,
             }
-        key = json.dumps([tid, frames, atoms, coords, descriptors], separators=(",", ":"))
+        requested_names = set(descriptors)
+        descriptor_revision = [result_id for name, result_id in catalog_rows
+                               if name in requested_names]
+        key = json.dumps([tid, frames, atoms, coords, descriptors, descriptor_revision],
+                         separators=(",", ":"))
 
         def build():
             blocks = []

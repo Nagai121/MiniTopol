@@ -171,10 +171,13 @@ class Workspace:
             if not paths:
                 raise LookupError("No completed descriptor results match the request")
             relation = con.read_parquet(paths, union_by_name=True, hive_partitioning=False)
-            if start is not None:
-                relation = relation.filter(f"frame >= {int(start)}")
-            if stop is not None:
-                relation = relation.filter(f"frame < {int(stop)}")
+            # Whole-trajectory descriptors, such as RMSF, have no frame column.
+            # A frame range does not constrain those aggregate results.
+            if "frame" in relation.columns:
+                if start is not None:
+                    relation = relation.filter(f"frame >= {int(start)}")
+                if stop is not None:
+                    relation = relation.filter(f"frame < {int(stop)}")
             if columns:
                 relation = relation.project(",".join('"' + c.replace('"', '""') + '"' for c in columns))
             return relation.to_arrow_table()
