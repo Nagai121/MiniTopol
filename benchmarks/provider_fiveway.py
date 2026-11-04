@@ -25,7 +25,7 @@ import zarr
 
 from minitopol import Workspace, convert
 from minitopol.descriptors import DescriptorDefinition, ResultStore
-from minitopol.provider.runtime import register
+from minitopol.provider.runtime import register, read_registry
 
 READER_REPO = Path(__file__).resolve().parents[1] / "reader-dependency"
 sys.path.insert(0, str(READER_REPO))
@@ -218,7 +218,7 @@ def run_once(client, prepared, round_index, strategy, ref_digests,
         client.stop()
         deadline = time.monotonic()+10
         while time.monotonic() < deadline:
-            if client.status().get("running") is False:
+            if "session" not in (read_registry() or {}):
                 break
             time.sleep(.1)
         else:
