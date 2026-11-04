@@ -196,16 +196,17 @@ class DataProvider:
         out_positions = np.empty((len(frames), len(selected), 3), dtype="<f4")
         out_time = np.empty(len(frames), dtype="<f8")
         out_box = np.empty((len(frames), 3, 3), dtype="<f4")
-        chunk_size = manifest["options"]["chunk_frames"]
-        groups = {}
-        for output_index, frame in enumerate(frames):
-            groups.setdefault(frame // chunk_size, []).append((output_index, frame))
-
         # File-system and Zarr format awareness remains exclusively here.
         source = zarr.open_group(
             str(self.workspace.trajectory_path(trajectory) / "A.zarr"), mode="r")
         position_array, time_array, box_array = (
             source["positions"], source["time"], source["box"])
+        # Physical AGX chunks can be smaller than the logical converter batch.
+        # Cache/decompress at the actual stored position-chunk boundary.
+        chunk_size = int(position_array.chunks[0])
+        groups = {}
+        for output_index, frame in enumerate(frames):
+            groups.setdefault(frame // chunk_size, []).append((output_index, frame))
 
         # Cache.request owns its reentrant lock while calling this builder;
         # the decoded-chunk LRU therefore has serialized mutations.
