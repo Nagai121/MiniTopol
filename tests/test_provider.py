@@ -152,3 +152,53 @@ def test_http_service_lifecycle(prepared, tmp_path, monkeypatch):
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
+
+
+
+def test_decoded_chunk_reused_by_different_request_keys(prepared):
+    """Distinct requested frames reuse decoded source chunks, not only SHM replies."""
+    workspace, tid = prepared
+    budget = 8 * 1024 * 1024
+    provider = DataProvider(workspace.path, budget)
+    try:
+        first = provider.get({"trajectory": tid, "coordinates": True,
+                              "frames": [0], "descriptors": []})
+        provider.cache.release(first["lease"])
+        assert len(provider.decoded_chunks) == 1
+        cached_key = next(iter(provider.decoded_chunks))
+        cached_arrays = provider.decoded_chunks[cached_key]
+
+        second = provider.get({"trajectory": tid, "coordinates": True,
+                               "frames": [1], "descriptors": []})
+        parts = {entry["name"]: entry for entry in second["buffers"]}
+        actual = np.frombuffer(_shm_data(parts["coordinates"]), dtype="<f4").reshape(1, 2, 3)
+        np.testing.assert_allclose(actual[0, 0], [6, 2, 3], atol=.002)
+        provider.cache.release(second["lease"])
+
+        assert provider.decoded_chunks[cached_key] is cached_arrays
+        assert provider.cache.hits == 0  # Distinct SHM request keys.
+        assert provider.decoded_used <= provider.decoded_budget
+        assert provider.cache.used + provider.decoded_used <= budget
+        assert provider.cache.budget + provider.decoded_budget == budget
+    finally:
+        provider.cache.close()
+
+
+def test_decoded_lru_eviction_is_bounded_and_reloads_correctly(prepared):
+    workspace, tid = prepared
+    provider = DataProvider(workspace.path, budget=1500)
+    assert provider.decoded_budget == 300  # One 3-frame source chunk fits.
+    try:
+        for requested in ([0, 3, 6], [6, 0, 3], [0, 4, 8]):
+            result = provider.get({"trajectory": tid, "coordinates": True,
+                                   "frames": requested, "descriptors": []})
+            parts = {entry["name"]: entry for entry in result["buffers"]}
+            actual = np.frombuffer(_shm_data(parts["coordinates"]), dtype="<f4").reshape(3, 2, 3)
+            expected = np.asarray([[1 + 5*f, 2, 3] for f in requested])
+            np.testing.assert_allclose(actual[:, 0], expected, atol=.002)
+            provider.cache.release(result["lease"])
+            assert provider.decoded_used <= provider.decoded_budget
+            assert provider.cache.used + provider.decoded_used <= 1500
+            assert len(provider.decoded_chunks) <= 1
+    finally:
+        provider.cache.close()
