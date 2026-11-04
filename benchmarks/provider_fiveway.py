@@ -32,7 +32,7 @@ sys.path.insert(0, str(READER_REPO))
 from reader import Reader
 
 
-def make_dataset(directory: Path, frames=1152, atoms=4096):
+def make_dataset(directory: Path, frames=1152, atoms=4800):
     n_residues = atoms // 10
     universe = mda.Universe.empty(atoms, n_residues=n_residues,
                                  atom_resindex=np.repeat(np.arange(n_residues), 10),
