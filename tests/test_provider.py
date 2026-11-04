@@ -204,32 +204,37 @@ def test_decoded_lru_eviction_is_bounded_and_reloads_correctly(prepared):
         provider.cache.close()
 
 
-def test_profile_stage_timing_cache_hits_and_reset(prepared, monkeypatch):
-    """Instrument actual Zarr/Arrow/SHM work, including both cache layers."""
+def _profile_lines(path):
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_profile_appends_stage_timings_and_cache_stats(prepared, monkeypatch):
+    """Each completed query adds one TXT line, with no in-memory history."""
     workspace, tid = prepared
     monkeypatch.setenv("MINITOPOL_PROVIDER_PROFILE", "1")
+    monkeypatch.delenv("MINITOPOL_PROVIDER_PROFILE_PATH", raising=False)
     provider = DataProvider(workspace.path, 8 * 1024 * 1024)
     try:
-        first = provider.get({"trajectory": tid, "coordinates": True,
-                              "frames": [0], "descriptors": ["sample"]})
-        provider.cache.release(first["lease"])
-        second = provider.get({"trajectory": tid, "coordinates": True,
-                               "frames": [1], "descriptors": ["sample"]})
-        provider.cache.release(second["lease"])
-        third = provider.get({"trajectory": tid, "coordinates": True,
-                              "frames": [1], "descriptors": ["sample"]})
-        provider.cache.release(third["lease"])
-        snapshot = provider.profile_snapshot()
-        assert snapshot["enabled"] is True
-        assert len(snapshot["records"]) == 3
-        miss, hit, exact = snapshot["records"]
-        for record in snapshot["records"]:
+        path = workspace.path / "provider-profile.txt"
+        assert provider.profile_path == path
+        assert not path.exists()
+        for frame in [0, 1, 1]:
+            result = provider.get({"trajectory": tid, "coordinates": True,
+                                   "frames": [frame], "descriptors": ["sample"]})
+            provider.cache.release(result["lease"])
+        assert path.exists()
+        miss, hit, exact = _profile_lines(path)
+        assert len(_profile_lines(path)) == 3
+        for record in (miss, hit, exact):
             assert record["status"] == "success"
+            assert record["timestamp"]
+            assert record["request"]["trajectory"] == tid
+            assert record["request"]["frames"] == 1
             assert record["total_ms"] >= 0
             assert all(t >= 0 for t in record["stages_ms"].values())
         assert miss["counts"]["decoded_chunk_miss"] == 1
         assert miss["counts"]["shared_cache_miss"] == 1
-        assert miss["stages_ms"]["zarr_fetch_and_decode"] >= 0
+        assert "zarr_fetch_and_decode" in miss["stages_ms"]
         assert "descriptor_query" in miss["stages_ms"]
         assert "shared_memory_copy" in miss["stages_ms"]
         assert hit["counts"]["decoded_chunk_hit"] == 1
@@ -237,8 +242,7 @@ def test_profile_stage_timing_cache_hits_and_reset(prepared, monkeypatch):
         assert "zarr_fetch_and_decode" not in hit["stages_ms"]
         assert exact["counts"]["shared_cache_hit"] == 1
         assert "coordinate_extract_copy" not in exact["stages_ms"]
-        assert provider.clear_profiles()["cleared"]
-        assert provider.profile_snapshot()["records"] == []
+        assert not hasattr(provider, "profile_records")
     finally:
         provider.cache.close()
 
@@ -246,21 +250,49 @@ def test_profile_stage_timing_cache_hits_and_reset(prepared, monkeypatch):
 def test_profile_disabled_by_default(prepared, monkeypatch):
     workspace, tid = prepared
     monkeypatch.delenv("MINITOPOL_PROVIDER_PROFILE", raising=False)
+    monkeypatch.delenv("MINITOPOL_PROVIDER_PROFILE_PATH", raising=False)
     provider = DataProvider(workspace.path, 8 * 1024 * 1024)
     try:
         response = provider.get({"trajectory": tid, "coordinates": True, "frames": [0]})
         provider.cache.release(response["lease"])
-        assert provider.profile_snapshot() == {
-            "enabled": False, "capacity": 256, "records": []}
+        assert not (workspace.path / "provider-profile.txt").exists()
+        assert provider.profile_path is None
+        assert not hasattr(provider, "profile_records")
     finally:
         provider.cache.close()
 
 
-def test_profile_http_endpoint(prepared, tmp_path, monkeypatch):
+def test_profile_append_existing_file_custom_path_and_failed_requests(prepared, tmp_path, monkeypatch):
+    workspace, tid = prepared
+    log = tmp_path / "custom" / "measurements.txt"
+    log.parent.mkdir()
+    log.write_text('{"previous":true}\n', encoding="utf-8")
+    monkeypatch.setenv("MINITOPOL_PROVIDER_PROFILE", "1")
+    monkeypatch.setenv("MINITOPOL_PROVIDER_PROFILE_PATH", str(log))
+    provider = DataProvider(workspace.path, 8 * 1024 * 1024)
+    try:
+        response = provider.get({"trajectory": tid, "coordinates": True, "frames": [0]})
+        provider.cache.release(response["lease"])
+        with pytest.raises(ValueError, match="Invalid request fields"):
+            provider.get({"trajectory": tid, "invalid": 123})
+        lines = _profile_lines(log)
+        assert len(lines) == 3
+        assert lines[0] == {"previous": True}
+        assert lines[1]["status"] == "success"
+        assert lines[2]["status"] == "failure"
+        assert lines[2]["error_type"] == "ValueError"
+        assert not (workspace.path / "provider-profile.txt").exists()
+    finally:
+        provider.cache.close()
+
+
+def test_profile_http_request_writes_txt(prepared, tmp_path, monkeypatch):
     workspace, tid = prepared
     destination = tmp_path / "profile-registration.json"
+    output = tmp_path / "logs" / "profile.txt"
     monkeypatch.setenv("MINITOPOL_PROVIDER_REGISTRY", str(destination))
     monkeypatch.setenv("MINITOPOL_PROVIDER_PROFILE", "1")
+    monkeypatch.setenv("MINITOPOL_PROVIDER_PROFILE_PATH", str(output))
     register(workspace.path)
     process = subprocess.Popen(
         [sys.executable, "-m", "minitopol.provider", "serve"],
@@ -283,15 +315,18 @@ def test_profile_http_endpoint(prepared, tmp_path, monkeypatch):
             req = Request(base + route, data=data, headers=headers)
             with urlopen(req, timeout=15) as response:
                 return json.load(response)
-        assert call("/profile")["enabled"]
         fetched = call("/get", {"trajectory": tid, "coordinates": True, "frames": [0]})
-        assert len(call("/profile")["records"]) == 1
-        assert call("/profile/reset", {})["cleared"] is True
-        assert call("/profile")["records"] == []
+        assert len(_profile_lines(output)) == 1
+        assert _profile_lines(output)[0]["counts"]["shared_cache_miss"] == 1
+        from urllib.error import HTTPError
+        with pytest.raises(HTTPError) as no_profile:
+            call("/profile")
+        assert no_profile.value.code == 404
         assert call("/release", {"lease": fetched["lease"]})["released"]
         assert call("/stop", {})["stopping"]
         process.wait(timeout=15)
         assert process.returncode == 0
+        assert len(_profile_lines(output)) == 1
     finally:
         if process.poll() is None:
             process.kill()

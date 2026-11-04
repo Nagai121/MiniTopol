@@ -24,40 +24,51 @@ The Provider uses MiniTopol's Registry.blocks for Zarr coordinates and Workspace
 
 Known implementation limits: shared-memory response reuse still keys complete requests, while independently requested frames reuse previously decoded source chunks; intermediate decode/Arrow allocations can exceed the shared-cache cap; the service currently serializes cache misses; record layout remains stable but capacity and peak throughput are unmeasured. These are intended targets for later performance profiling, not claimed benchmarks. No training code is required for these integration tests.
 
-## Optional Provider phase profiling
+## Optional Provider phase profiling (append-only TXT)
 
-Start the Provider with `MINITOPOL_PROVIDER_PROFILE=1` set in the
-**Provider process environment**. Profiling is off by default.
-No Reader update or request-schema change is required.
+Set `MINITOPOL_PROVIDER_PROFILE=1` in the **Provider process environment**
+before starting it. Profiling is disabled by default, and Reader requests
+do not need to change.
 
-After issuing normal Reader requests, view a bounded (last 256 requests)
-breakdown via the authenticated Provider endpoint `GET /v1/profile` or:
+For each completed Provider `get()` request, the Provider appends exactly one
+UTF-8 JSON line to `<workspace>/provider-profile.txt`. The file is created
+on the first request, is **never truncated**, and retains all previous lines
+even after Provider restarts. There is no in-memory record history, record
+limit, profile retrieval API or `profile` CLI command.
 
-~~~bash
-python -m minitopol.provider profile
-python -m minitopol.provider profile --reset
+To choose a different location, set `MINITOPOL_PROVIDER_PROFILE_PATH`
+in the Provider environment before launch. For example, in PowerShell:
+
+~~~powershell
+$env:MINITOPOL_PROVIDER_PROFILE = "1"
+$env:MINITOPOL_PROVIDER_PROFILE_PATH = "D:\\MiniTopol\\provider-profile.txt"
+python -m minitopol.provider serve
 ~~~
 
-For each request, the profile records total Provider elapsed milliseconds,
-individual stage milliseconds and cache counters. The stages are:
-- `manifest_lookup` and `descriptor_catalog_lookup`: metadata/catalog;
+The TXT can be inspected while Provider is running. Each line stores a
+timestamp, abbreviated query information, status/error, total Provider elapsed
+milliseconds, per-stage milliseconds, and cache counters. Concurrent requests
+serialize only their append writes, so lines cannot interleave. Failed
+`get()` requests are recorded too. If the TXT cannot be written, Provider
+reports an error to stderr without changing a successful Reader response.
+
+The measured stages are:
+- `manifest_lookup`, `descriptor_catalog_lookup`: metadata/catalog;
 - `zarr_open_metadata`, `chunk_grouping`: open Zarr and map frames;
-- `zarr_fetch_and_decode`: **storage fetch plus codec decompression together**;
+- `zarr_fetch_and_decode`: storage fetch **and** codec decompression together;
 - `coordinate_extract_copy`, `coordinate_serialization`: select/pack;
 - `descriptor_query`, `descriptor_arrow_encode`: descriptor storage/query and Arrow;
-- `shared_memory_allocate`, `shared_memory_copy`: publish response buffers;
-- `shared_cache_lock_wait`: time waiting for shared-cache lock;
+- `shared_memory_allocate`, `shared_memory_copy`: shared-memory publication;
+- `shared_cache_lock_wait`: waiting for the shared-cache lock;
 - `other_provider_work`: remaining request overhead.
 
-`decoded_chunk_hit/miss`, `shared_cache_hit/miss`,
-`decoded_source_bytes`, `shared_memory_bytes`, `descriptor_rows`,
-and `requested_atom_frames` are request counters. An exact response-cache
-hit bypasses Zarr/descriptor processing; a decoded-chunk hit still copies
-the requested frames into the returned response.
+Cache hit/miss counters refer separately to decoded chunks and exact shared
+response buffers. Source decode bytes, output shared-memory bytes, descriptor
+row count, and requested atom-frame count are also recorded.
 
-**Measurement boundary:** Profiling measures wall time inside Provider
-`get()`, not Reader IPC/consumer time. Zarr indexing combines file loading
-and AGX decompression; these are *not* separately measured yet.
-For end-to-end speed, measure the same request at the Reader as well.
-Recording adds overhead; use non-profile runs for production throughput.
-Data records are bounded and never persisted by default.
+**Measurement boundary:** `total_ms` is sampled **before** JSON encoding and
+TXT file I/O, so file recording is excluded from the reported Provider time.
+Writing still adds real latency to the Reader-visible request. File access
+plus AGX decompression are not separately timed. Reader transport/consumption
+are not included. Use non-profile runs when benchmarking absolute end-to-end
+throughput.

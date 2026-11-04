@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections import OrderedDict, deque, defaultdict
+from collections import OrderedDict, defaultdict
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from multiprocessing import shared_memory
@@ -223,19 +224,27 @@ class DataProvider:
         self.decoded_chunks = OrderedDict()
         self.cache = Cache(budget - self.decoded_budget)
         self.profiling_enabled = os.environ.get("MINITOPOL_PROVIDER_PROFILE") == "1"
-        self.profile_records = deque(maxlen=256)
+        override = os.environ.get("MINITOPOL_PROVIDER_PROFILE_PATH")
+        self.profile_path = (
+            (Path(override).expanduser().resolve() if override
+             else self.workspace.path / "provider-profile.txt")
+            if self.profiling_enabled else None
+        )
+        # A lock only for appending complete JSON lines from concurrent requests.
+        # No request history is retained in memory.
         self.profile_lock = threading.Lock()
 
-    def profile_snapshot(self):
-        with self.profile_lock:
-            return {"enabled": self.profiling_enabled,
-                    "capacity": self.profile_records.maxlen,
-                    "records": list(self.profile_records)}
-
-    def clear_profiles(self):
-        with self.profile_lock:
-            self.profile_records.clear()
-        return {"cleared": True}
+    def _append_profile(self, record):
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+        try:
+            with self.profile_lock:
+                self.profile_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.profile_path.open("a", encoding="utf-8") as stream:
+                    stream.write(line)
+        except OSError as error:
+            # Profiling failures must not turn successful Reader calls into errors.
+            print(f"Provider profiling append failed ({self.profile_path}): {error}",
+                  file=sys.stderr)
 
     def _load_coordinates(self, trajectory, frames, selected, frame_count, manifest, trace=None):
         """Decode each source chunk at most once until its bounded LRU eviction.
@@ -340,14 +349,21 @@ class DataProvider:
             measured_ns = sum(details.values())
             details["other_provider_work"] = max(0, total_ns - measured_ns)
             record = {
+                "timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
                 "status": state,
                 "error_type": error,
+                "request": {
+                    "trajectory": request.get("trajectory"),
+                    "coordinates": request.get("coordinates", False),
+                    "descriptors": request.get("descriptors", []),
+                    "frames": trace.counters.get("requested_frames"),
+                } if isinstance(request, dict) else None,
                 "total_ms": round(total_ns / 1e6, 6),
                 "stages_ms": {k: round(v / 1e6, 6) for k, v in details.items()},
                 "counts": dict(trace.counters),
             }
-            with self.profile_lock:
-                self.profile_records.append(record)
+            # Measurement ends before opening/writing the TXT log.
+            self._append_profile(record)
 
     def _get(self, request, trace):
         if not isinstance(request, dict) or set(request) - {"trajectory", "frames", "start", "stop",
@@ -385,6 +401,8 @@ class DataProvider:
             raise ValueError("Invalid descriptor selection")
         if not coords and not descriptors:
             raise ValueError("Request coordinates, descriptors, or both")
+        if trace is not None:
+            trace.increment("requested_frames", len(frames))
         with _stage(trace, "descriptor_catalog_lookup"):
             with self.workspace.catalog() as con:
                 available = {row[0] for row in con.execute(
@@ -488,8 +506,6 @@ class Handler(BaseHTTPRequestHandler):
                                         **self.server.provider.cache.status()})
             if self.path == "/v1/list":
                 return self._send(200, self.server.provider.list_data())
-            if self.path == "/v1/profile":
-                return self._send(200, self.server.provider.profile_snapshot())
             return self._send(404, {"error": "Unknown route"})
         if self.command != "POST":
             return self._send(405, {"error": "Method not allowed"})
@@ -501,8 +517,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, self.server.provider.get(payload))
         if self.path == "/v1/release":
             return self._send(200, self.server.provider.cache.release(payload["lease"]))
-        if self.path == "/v1/profile/reset":
-            return self._send(200, self.server.provider.clear_profiles())
         if self.path == "/v1/stop":
             if self.server.provider.cache.status()["active_leases"]:
                 return self._send(409, {"error": "Release active leases before stopping Provider"})
@@ -572,37 +586,16 @@ def serve():
 
 
 
-def _profile_cli(reset=False):
-    from urllib.request import Request, urlopen
-    config = read_registry() or {}
-    session = config.get("session")
-    if not session or not _probe(session):
-        raise RuntimeError("Provider is not running")
-    route = "/v1/profile/reset" if reset else "/v1/profile"
-    req = Request(
-        f"http://127.0.0.1:{session['port']}{route}",
-        headers={"Authorization": "Bearer " + session["token"],
-                 "Content-Type": "application/json"},
-        data=b"{}" if reset else None,
-        method="POST" if reset else "GET")
-    with urlopen(req, timeout=10) as response:
-        return json.load(response)
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m minitopol.provider")
     sub = parser.add_subparsers(dest="command", required=True)
     registration = sub.add_parser("register", help="Register this installation and a Workspace")
     registration.add_argument("--workspace", default=None)
     sub.add_parser("serve", help="Run one shared local Provider process")
-    profile = sub.add_parser("profile", help="Show bounded per-request Provider timings")
-    profile.add_argument("--reset", action="store_true", help="Clear recorded timings")
     args = parser.parse_args(argv)
     if args.command == "register":
         workspace = args.workspace or Workspace.default_path()
         print(json.dumps(register(workspace), ensure_ascii=False))
-    elif args.command == "profile":
-        print(json.dumps(_profile_cli(args.reset), ensure_ascii=False, indent=2))
     else:
         return serve()
     return 0
