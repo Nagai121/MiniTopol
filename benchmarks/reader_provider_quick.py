@@ -50,7 +50,9 @@ def make_dataset(directory: Path, frames=900, atoms=1600):
     t0 = time.perf_counter()
     with mda.Writer(str(xtc), n_atoms=atoms, precision=3) as writer:
         for i in range(frames):
-            universe.atoms.positions = positions + np.float32(i * 0.004)
+            if i:
+                positions += rng.normal(0, .035, size=(atoms, 3)).astype("f4")
+            universe.atoms.positions = positions
             universe.trajectory.ts.time = i * 10
             writer.write(universe.atoms)
     source_seconds = time.perf_counter() - t0
@@ -135,7 +137,7 @@ def main():
         prepared = make_dataset(directory)
         tid, atoms, count = prepared["trajectory"], prepared["atoms"], prepared["frames"]
         print("BENCH_FIXTURE " + json.dumps({
-            "frames": count, "atoms": atoms,
+            "frames": count, "atoms": atoms, "trajectory_motion": "atomwise_random_walk_sigma_0.035_angstrom_per_frame",
             "af_in_dataset": count*atoms, "physical_chunk_frames": prepared["chunk_frames"],
             "encoded_A_zarr_bytes": prepared["physical_bytes"],
             "source_xtc_bytes": prepared["xtc_bytes"],
@@ -156,6 +158,8 @@ def main():
                 "cache_limit_bytes": status["budget_bytes"],
                 "pid": status["pid"]
             }), flush=True)
+            # Warm the Numba/JIT codec path before timing real cold-cache requests.
+            timed_fetch(client, tid, data=["coords"], frame_indices=[0], atoms=atoms)
             rng = np.random.default_rng(77)
             random_frames = rng.choice(count, size=256, replace=False).tolist()
             sequential_frames = list(range(128, 384))
