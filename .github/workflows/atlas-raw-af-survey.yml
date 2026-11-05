@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python analyses/atlas_survey.py --limit 5 --workers 3
+      - run: python analyses/atlas_survey.py --limit 400 --workers 10
       - name: Save collected data
         run: |
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
