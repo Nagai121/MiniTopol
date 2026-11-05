@@ -1,0 +1,146 @@
+[
+  {
+    "id": "1k5n_A",
+    "metadata": {
+      "status": 200,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/api/ATLAS/metadata/1k5n_A",
+      "headers": {
+        "content-length": "2340",
+        "content-type": "application/json"
+      },
+      "preview": "{\"1k5n_A\":{\"PDB\":\"1k5n_A\",\"PDB_resolution\":1.09,\"refinement_method\":\"-\",\"refinement_TMscore\":\"-\",\"length\":276,\"UniProt\":\"P01889\",\"UniProt_entry\":\"HLAB_HUMAN\",\"organism\":\"H. sapiens\",\"protein_name\":\"HLA class I histocompatibility antigen, B alpha chain\",\"contact_chain\":true,\"contact_ligand\":true,\"contact_ion\":false,\"contact_nucleotide\":false,\"no_contact\":false,\"alpha%\":28,\"beta%\":38,\"coil%\":33,\"div_SE\":0.63,\"div_MM\":0.608,\"avg_RMSF\":3.12,\"avg_gyration\":25.17,\"ECOD_domain_ID\":[\"e1k5nA1\",\"e1k5nA2\"],\"ECOD_architecture\":[\"beta sandwiches\",\"a+b two layers\"],\"ECOD_ID\":[\"11.1.1.2544\",\"233.1.1.2\"],\"ECOD_PDB_delineation\":[\"182-276\",\"1-181\"],\"ECOD_renum_delineation\":[\"182-276\",\"1-181\"],\"ECOD_X\":[\"Immunoglobulin-like beta-sandwich\",\"-\"],\"ECOD_H\":[\"Immunoglobulin-related\",\"-\"],\"ECOD_T\":[\"Immunoglobulin/Fibronectin type III/E set domains/PapD-like\",\"MHC antigen-recognition domain\"],\"ECOD_F\":[\"C1-set_2\",\"MHC_I\"],\"CATH_ID\":[\"2.60.40.10\",\"3.30.500.10\"],\"CATH_PDB_delineation\":[\"182-276\",\"1-181\"],\"CATH_renum_delineation\":[\"182-276\",\"1-181\"],\"CATH_class\":[\"Mainly Beta\",\"Alpha Beta\"],\"CATH_architecture\":[\"Sandwich\",\"2-Layer Sandwich\"],\"CATH_topology\":[\"Immunoglobulin-like\",\"Murine Class I Major Histocompatibility Complex, H2-DB; Chain A, domain 1\"],\"CATH_supfamily\":[\"Immunoglobulins\",\"MHC class I-like antigen recognition-like\"],\"SCOP_ID\":[\"b.1.1.2\",\"d.19.1.1\"],\"SCOP_PDB_delineation\":[\"182-276\",\"1-181\"],\"SCOP_renum_delineation\":[\"182-276\",\"1-181\"],\"SCOP_class\":[\"All beta proteins\",\"Alpha and beta "
+    },
+    "total_head": {
+      "error": "HTTPError: HTTP Error 405: Method Not Allowed"
+    },
+    "zip_head": {
+      "status": 200,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/1k5n_A/1k5n_A_total.zip",
+      "headers": {
+        "Accept-Ranges": "bytes",
+        "Content-Length": "6422615593",
+        "Content-Type": "application/zip"
+      },
+      "preview": ""
+    },
+    "zip_tail": {
+      "status": 206,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/1k5n_A/1k5n_A_total.zip",
+      "headers": {
+        "Accept-Ranges": "bytes",
+        "Content-Length": "128",
+        "Content-Range": "bytes 6422615465-6422615592/6422615593",
+        "Content-Type": "application/zip"
+      },
+      "preview": "�\u0015eux\u000b\u0000\u0001\u0004�\b\u0000\u0000\u0004�\u0007\u0000\u0000\u0001\u0000\b\u0000�K�~\u0001\u0000\u0000\u0000PK\u0006\u0006,\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u001e\u0003-\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u000f\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u000f\u0000\u0000\u0000\u0000\u0000\u0000\u0000�\u0005\u0000\u0000\u0000\u0000\u0000\u0000@P�~\u0001\u0000\u0000\u0000PK\u0006\u0007\u0000\u0000\u0000\u0000�U�~\u0001\u0000\u0000\u0000\u0001\u0000\u0000\u0000PK\u0005\u0006\u0000\u0000\u0000\u0000\u000f\u0000\u000f\u0000�\u0005\u0000\u0000����\u0000\u0000"
+    }
+  },
+  {
+    "id": "2au7_A",
+    "metadata": {
+      "status": 200,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/api/ATLAS/metadata/2au7_A",
+      "headers": {
+        "content-length": "1597",
+        "content-type": "application/json"
+      },
+      "preview": "{\"2au7_A\":{\"PDB\":\"2au7_A\",\"PDB_resolution\":1.05,\"refinement_method\":\"-\",\"refinement_TMscore\":\"-\",\"length\":175,\"UniProt\":\"P0A7A9\",\"UniProt_entry\":\"IPYR_ECOLI\",\"organism\":\"E. coli\",\"protein_name\":\"Inorganic pyrophosphatase\",\"contact_chain\":false,\"contact_ligand\":false,\"contact_ion\":true,\"contact_nucleotide\":false,\"no_contact\":false,\"alpha%\":17,\"beta%\":33,\"coil%\":51,\"div_SE\":0.835,\"div_MM\":0.813,\"avg_RMSF\":1.09,\"avg_gyration\":15.88,\"ECOD_domain_ID\":[\"e2au7A1\"],\"ECOD_architecture\":[\"beta barrels\"],\"ECOD_ID\":[\"2.5.1.1\"],\"ECOD_PDB_delineation\":[\"1-175\"],\"ECOD_renum_delineation\":[\"1-175\"],\"ECOD_X\":[\"OB-fold\"],\"ECOD_H\":[\"-\"],\"ECOD_T\":[\"Inorganic pyrophosphatase\"],\"ECOD_F\":[\"Pyrophosphatase\"],\"CATH_ID\":[\"3.90.80.10\"],\"CATH_PDB_delineation\":[\"1-175\"],\"CATH_renum_delineation\":[\"1-175\"],\"CATH_class\":[\"Alpha Beta\"],\"CATH_architecture\":[\"Alpha-Beta Complex\"],\"CATH_topology\":[\"Inorganic Pyrophosphatase\"],\"CATH_supfamily\":[\"Inorganic pyrophosphatase\"],\"SCOP_ID\":[\"b.40.5.1\"],\"SCOP_PDB_delineation\":[\"1-175\"],\"SCOP_renum_delineation\":[\"1-175\"],\"SCOP_class\":[\"All beta proteins\"],\"SCOP_fold\":[\"OB-fold\"],\"SCOP_supfamily\":[\"Inorganic pyrophosphatase\"],\"SCOP_family\":[\"Inorganic pyrophosphatase\"],\"SWORD_ID\":[\"Optimal • Dom. n°1\"],\"SWORD_quality\":[\"n/a\"],\"SWORD_ambiguity\":[\"+\"],\"SWORD_renum_delineation\":[\"1-175\"],\"SWORD_PDB_delineation\":[\"1-175\"],\"non_redundant_protein\":false,\"non_redundant_domain\":[false],\"sequence\":\"SLLNVPAGKDLPEDIYVVIEIPANADPIKYEIDKESGALFVDQFMSTAMFYPCNYGYINHTLSLDGDPVDVLVPTPYPLQP"
+    },
+    "total_head": {
+      "error": "HTTPError: HTTP Error 405: Method Not Allowed"
+    },
+    "zip_head": {
+      "status": 200,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/2au7_A/2au7_A_total.zip",
+      "headers": {
+        "Accept-Ranges": "bytes",
+        "Content-Length": "3365927947",
+        "Content-Type": "application/zip"
+      },
+      "preview": ""
+    },
+    "zip_tail": {
+      "status": 206,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/2au7_A/2au7_A_total.zip",
+      "headers": {
+        "Accept-Ranges": "bytes",
+        "Content-Length": "128",
+        "Content-Range": "bytes 3365927819-3365927946/3365927947",
+        "Content-Type": "application/zip"
+      },
+      "preview": "ptUT\u0005\u0000\u00030\u001e�aux\u000b\u0000\u0001\u0004�\b\u0000\u0000\u0004�\u0007\u0000\u0000PK\u0001\u0002\u001e\u0003\u0014\u0000\u0000\u0000\b\u0000;�<Wn4��O\u0004\u0000\u0000\u0004\t\u0000\u0000\n\u0000\u0018\u0000\u0000\u0000\u0000\u0000\u0001\u0000\u0000\u0000��;��README.txtUT\u0005\u0000\u0003��\u0015eux\u000b\u0000\u0001\u0004�\b\u0000\u0000\u0004�\u0007\u0000\u0000PK\u0005\u0006\u0000\u0000\u0000\u0000\u000f\u0000\u000f\u0000'\u0005\u0000\u0000����\u0000\u0000"
+    }
+  },
+  {
+    "id": "3ilw_A",
+    "metadata": {
+      "status": 200,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/api/ATLAS/metadata/3ilw_A",
+      "headers": {
+        "content-length": "2286",
+        "content-type": "application/json"
+      },
+      "preview": "{\"3ilw_A\":{\"PDB\":\"3ilw_A\",\"PDB_resolution\":1.603,\"refinement_method\":\"AlphaFold2\",\"refinement_TMscore\":0.97,\"length\":470,\"UniProt\":\"P9WG47\",\"UniProt_entry\":\"GYRA_MYCTU\",\"organism\":\"M. tuberculosis\",\"protein_name\":\"DNA gyrase subunit A\",\"contact_chain\":true,\"contact_ligand\":true,\"contact_ion\":true,\"contact_nucleotide\":true,\"no_contact\":false,\"alpha%\":50,\"beta%\":17,\"coil%\":32,\"div_SE\":0.898,\"div_MM\":0.839,\"avg_RMSF\":1.26,\"avg_gyration\":29.7,\"ECOD_domain_ID\":[\"e3ilwA1\",\"e3ilwA2\",\"e3ilwA3\"],\"ECOD_architecture\":[\"alpha arrays\",\"alpha bundles\",\"a+b two layers\"],\"ECOD_ID\":[\"101.1.2.222\",\"4016.1.1.3\",\"4014.1.1.3\"],\"ECOD_PDB_delineation\":[\"37-170\",\"356-500\",\"170-356\"],\"ECOD_renum_delineation\":[\"7-140\",\"326-470\",\"140-326\"],\"ECOD_X\":[\"HTH\",\"-\",\"-\"],\"ECOD_H\":[\"HTH\",\"-\",\"-\"],\"ECOD_T\":[\"winged\",\"alpha-helical domain in type II DNA topoisomerase\",\"a+b domain in type II DNA topoisomerase\"],\"ECOD_F\":[\"DNA_topoisoIV_1st\",\"DNA_topoisoIV_3rd\",\"DNA_topoisoIV_2nd_1\"],\"CATH_ID\":[\"-\"],\"CATH_PDB_delineation\":[\"-\"],\"CATH_renum_delineation\":[\"-\"],\"CATH_class\":[\"-\"],\"CATH_architecture\":[\"-\"],\"CATH_topology\":[\"-\"],\"CATH_supfamily\":[\"-\"],\"SCOP_ID\":[\"e.11.1.0\"],\"SCOP_PDB_delineation\":[\"31-500\"],\"SCOP_renum_delineation\":[\"1-470\"],\"SCOP_class\":[\"Multi-domain proteins (alpha and beta)\"],\"SCOP_fold\":[\"Type II DNA topoisomerase C-terminal domain-like\"],\"SCOP_supfamily\":[\"Type II DNA topoisomerase C-terminal domain-like\"],\"SCOP_family\":[\"-\"],\"SWORD_ID\":[\"Optimal • Dom. n°1\",\"Optimal • Dom. n°2\",\"Optimal �"
+    },
+    "total_head": {
+      "error": "HTTPError: HTTP Error 405: Method Not Allowed"
+    },
+    "zip_head": {
+      "status": 200,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/3ilw_A/3ilw_A_total.zip",
+      "headers": {
+        "Accept-Ranges": "bytes",
+        "Content-Length": "11488750104",
+        "Content-Type": "application/zip"
+      },
+      "preview": ""
+    },
+    "zip_tail": {
+      "status": 206,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/3ilw_A/3ilw_A_total.zip",
+      "headers": {
+        "Accept-Ranges": "bytes",
+        "Content-Length": "128",
+        "Content-Range": "bytes 11488749976-11488750103/11488750104",
+        "Content-Type": "application/zip"
+      },
+      "preview": "�\u0015eux\u000b\u0000\u0001\u0004�\b\u0000\u0000\u0004�\u0007\u0000\u0000\u0001\u0000\b\u0000�_Ȭ\u0002\u0000\u0000\u0000PK\u0006\u0006,\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u001e\u0003-\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u000f\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u000f\u0000\u0000\u0000\u0000\u0000\u0000\u0000�\u0005\u0000\u0000\u0000\u0000\u0000\u0000\u0017dȬ\u0002\u0000\u0000\u0000PK\u0006\u0007\u0000\u0000\u0000\u0000�iȬ\u0002\u0000\u0000\u0000\u0001\u0000\u0000\u0000PK\u0005\u0006\u0000\u0000\u0000\u0000\u000f\u0000\u000f\u0000�\u0005\u0000\u0000����\u0000\u0000"
+    }
+  },
+  {
+    "id": "5e3e_A",
+    "metadata": {
+      "status": 200,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/api/ATLAS/metadata/5e3e_A",
+      "headers": {
+        "content-length": "1320",
+        "content-type": "application/json"
+      },
+      "preview": "{\"5e3e_A\":{\"PDB\":\"5e3e_A\",\"PDB_resolution\":1.7,\"refinement_method\":\"MODELLER\",\"refinement_TMscore\":\"-\",\"length\":104,\"UniProt\":\"-\",\"UniProt_entry\":\"-\",\"organism\":\"Y. kristensenii ATCC 33638\",\"protein_name\":\"Toxin\",\"contact_chain\":true,\"contact_ligand\":true,\"contact_ion\":true,\"contact_nucleotide\":true,\"no_contact\":false,\"alpha%\":69,\"beta%\":0,\"coil%\":31,\"div_SE\":0.889,\"div_MM\":0.816,\"avg_RMSF\":1.12,\"avg_gyration\":13.53,\"ECOD_domain_ID\":[\"e5e3eA1\"],\"ECOD_architecture\":[\"alpha bundles\"],\"ECOD_ID\":[\"1024.1.1.1\"],\"ECOD_PDB_delineation\":[\"1-99\"],\"ECOD_renum_delineation\":[\"1-99\"],\"ECOD_X\":[\"-\"],\"ECOD_H\":[\"-\"],\"ECOD_T\":[\"CdiI immunity protein\"],\"ECOD_F\":[\"EUF08174\"],\"CATH_ID\":[\"-\"],\"CATH_PDB_delineation\":[\"-\"],\"CATH_renum_delineation\":[\"-\"],\"CATH_class\":[\"-\"],\"CATH_architecture\":[\"-\"],\"CATH_topology\":[\"-\"],\"CATH_supfamily\":[\"-\"],\"SCOP_ID\":[\"-\"],\"SCOP_PDB_delineation\":[\"-\"],\"SCOP_renum_delineation\":[\"-\"],\"SCOP_class\":[\"-\"],\"SCOP_fold\":[\"-\"],\"SCOP_supfamily\":[\"-\"],\"SCOP_family\":[\"-\"],\"SWORD_ID\":[\"Optimal • Dom. n°1\"],\"SWORD_quality\":[\"n/a\"],\"SWORD_ambiguity\":[\"+\"],\"SWORD_renum_delineation\":[\"1-104\"],\"SWORD_PDB_delineation\":[\"1-104\"],\"non_redundant_protein\":true,\"non_redundant_domain\":[true],\"sequence\":\"MIINEKYPYLSYLLRCYFNQDFEVLFGNADETLAAYKATETAEERLQMKAEIDYLLALSLPDDELQDILLNKLDCSYYYPNEWSSSEEWLKHIYKQMNHHHHHH\"}}"
+    },
+    "total_head": {
+      "error": "HTTPError: HTTP Error 405: Method Not Allowed"
+    },
+    "zip_head": {
+      "status": 200,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/5e3e_A/5e3e_A_total.zip",
+      "headers": {
+        "Accept-Ranges": "bytes",
+        "Content-Length": "2379925189",
+        "Content-Type": "application/zip"
+      },
+      "preview": ""
+    },
+    "zip_tail": {
+      "status": 206,
+      "final_url": "https://www.dsimb.inserm.fr/ATLAS/database/ATLAS/5e3e_A/5e3e_A_total.zip",
+      "headers": {
+        "Accept-Ranges": "bytes",
+        "Content-Length": "128",
+        "Content-Range": "bytes 2379925061-2379925188/2379925189",
+        "Content-Type": "application/zip"
+      },
+      "preview": "ptUT\u0005\u0000\u0003[��dux\u000b\u0000\u0001\u0004�\b\u0000\u0000\u0004�\u0007\u0000\u0000PK\u0001\u0002\u001e\u0003\u0014\u0000\u0000\u0000\b\u0000;�<Wn4��O\u0004\u0000\u0000\u0004\t\u0000\u0000\n\u0000\u0018\u0000\u0000\u0000\u0000\u0000\u0001\u0000\u0000\u0000����ڍREADME.txtUT\u0005\u0000\u0003��\u0015eux\u000b\u0000\u0001\u0004�\b\u0000\u0000\u0004�\u0007\u0000\u0000PK\u0005\u0006\u0000\u0000\u0000\u0000\u000f\u0000\u000f\u0000'\u0005\u0000\u0000��ڍ\u0000\u0000"
+    }
+  }
+]
