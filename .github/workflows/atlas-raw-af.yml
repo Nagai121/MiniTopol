@@ -1,0 +1,25 @@
+name: ATLAS raw AF probe
+on:
+  push:
+    branches: ['research/atlas-raw-af-size-20261105']
+    paths:
+      - 'analyses/atlas_probe.py'
+      - '.github/workflows/atlas-raw-af.yml'
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python analyses/atlas_probe.py
+      - name: Save collected metadata
+        run: |
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add analyses/atlas_probe.json
+          git commit -m "Record ATLAS source file metadata" || exit 0
+          git push
