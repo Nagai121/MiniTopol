@@ -1,0 +1,26 @@
+name: ATLAS raw AF survey
+on:
+  push:
+    branches: ['research/atlas-raw-af-size-20261105']
+    paths:
+      - 'analyses/atlas_survey.py'
+      - '.github/workflows/atlas-raw-af-survey.yml'
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python analyses/atlas_survey.py --limit 5 --workers 3
+      - name: Save collected data
+        run: |
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add analyses/atlas_raw_af_survey.json analyses/atlas_raw_af_survey.csv
+          git commit -m "Record ATLAS AF and source byte survey" || exit 0
+          git push
