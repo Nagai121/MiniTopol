@@ -41,8 +41,8 @@ def test_triclinic_bond_image_and_isolated_atom():
     np.testing.assert_allclose(result[0], base, atol=1e-12)
 
 
-def test_gpu_planner_accepts_up_to_20480_subject_to_memory():
-    gpu_sasa_batch._buffers = None
+def test_gpu_planner_accepts_up_to_20480_subject_to_memory(monkeypatch):
+    monkeypatch.setattr(gpu_sasa_batch, "_buffers", None)
     assert gpu_sasa_batch.fits_planned_reservation(1, 20480, 1 << 34, 1 << 33)
     assert not gpu_sasa_batch.fits_planned_reservation(1, 20481, 1 << 34, 1 << 33)
     assert not gpu_sasa_batch.fits_planned_reservation(1, 20480, 1 << 20, 1 << 20)
@@ -51,3 +51,43 @@ def test_gpu_planner_accepts_up_to_20480_subject_to_memory():
 def test_invalid_bond_forest_is_rejected():
     with pytest.raises(ValueError):
         bond_forest(3, [[0, 3]])
+
+
+def test_coordinate_blocks_use_native_whole_when_bonds_exist():
+    import pyarrow as pa
+    from minitopol.registry import FrameBlock
+    from minitopol.coordinates import coordinate_blocks
+
+    base = np.array([[9.7, 1., 1.], [10.3, 1., 1.], [10.9, 1., 1.]])
+    expected = np.stack([base + [2.*t, 0., 0.] for t in range(5)])
+    stored = np.asarray(expected % 10., dtype=np.float32)
+    box = np.diag([10., 10., 10.])
+    table = pa.table({"point_i": [0, 1], "point_j": [1, 2]})
+
+    class RegistryStub:
+        def bond_info(self, trajectory):
+            return {"edges": 2}
+
+        def bonds(self, trajectory):
+            return table
+
+        def manifest(self, trajectory):
+            return {"atoms": 3}
+
+        def blocks(self, trajectory, chunk_frames=None):
+            for i in range(0, len(stored), chunk_frames or len(stored)):
+                j = min(i + (chunk_frames or len(stored)), len(stored))
+                yield FrameBlock(i, j, stored[i:j].copy(),
+                                 np.arange(i, j, dtype=np.float64),
+                                 np.repeat(box[None], j-i, axis=0))
+
+    registry = RegistryStub()
+    for chunk in (1, 2, 5):
+        result = np.concatenate([b.positions for b in coordinate_blocks(
+            registry, "test", mode="nojump", initial_whole=False,
+            half_box_steps=True, chunk_frames=chunk)])
+        np.testing.assert_allclose(result, expected, atol=1e-5)
+    np.testing.assert_allclose(stored, expected % 10., atol=1e-5)
+    with pytest.raises(ValueError, match="half-box"):
+        list(coordinate_blocks(registry, "test", mode="nojump",
+                               half_box_steps=False))
