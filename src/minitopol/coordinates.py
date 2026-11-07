@@ -45,22 +45,44 @@ def coordinate_blocks(registry, trajectory, *, mode, initial_whole=False,
                       half_box_steps=False, chunk_frames=None):
     if mode not in ("nonperiodic", "continuous", "nojump"):
         raise ValueError("Select nonperiodic, continuous (already unwrapped), or nojump coordinates explicitly")
-    if mode != "nonperiodic" and not initial_whole:
-        raise ValueError("The intended initial molecular/complex image must be confirmed with initial_whole=True")
     if mode == "nojump" and not half_box_steps:
         raise ValueError("NoJump requires the half-box inter-frame motion assumption (half_box_steps=True)")
+
+    forest = None
+    if mode == "nojump" and registry.bond_info(trajectory) is not None:
+        from .whole_nojump import bond_forest, reconstruct_frame
+        table = registry.bonds(trajectory)
+        edges = np.column_stack((table["point_i"].to_numpy(), table["point_j"].to_numpy()))
+        forest = bond_forest(registry.manifest(trajectory)["atoms"], edges)
+
+    # TPR connectivity reconstructs the initial whole components. When absent,
+    # preserve the existing caller-confirmed initial-image contract.
+    if mode != "nonperiodic" and not initial_whole and forest is None:
+        raise ValueError("The intended initial molecular/complex image must be confirmed with initial_whole=True")
+
     previous = None
+    centers = (np.zeros((len(forest[2]) - 1, 3), dtype=np.float64)
+               if forest is not None else None)
+    first = True
     for block in registry.blocks(trajectory, chunk_frames=chunk_frames):
         positions = np.asarray(block.positions, dtype=np.float64)
         for index in range(len(positions)):
             if mode != "nonperiodic":
                 box_dimensions(block.box[index])
             if mode == "nojump":
-                reduced = positions[index] @ np.linalg.inv(block.box[index].astype(np.float64))
-                if previous is not None:
-                    reduced -= np.round(reduced - previous)
-                previous = reduced.copy()
-                positions[index] = reduced @ block.box[index]
+                box = np.asarray(block.box[index], dtype=np.float64)
+                inverse = np.linalg.inv(box)
+                if forest is not None:
+                    reconstruct_frame(positions[index], box, inverse,
+                                      forest[0], forest[1], forest[2],
+                                      centers, first)
+                else:
+                    reduced = positions[index] @ inverse
+                    if previous is not None:
+                        reduced -= np.round(reduced - previous)
+                    previous = reduced.copy()
+                    positions[index] = reduced @ box
+                first = False
         yield FrameBlock(block.start, block.stop, positions, block.time, block.box)
 
 

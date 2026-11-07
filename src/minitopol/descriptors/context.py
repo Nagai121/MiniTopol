@@ -54,6 +54,15 @@ class AnalysisContext:
                            "ca_policy": "explicit indices or unique CA/C in a recognized protein residue",
                            "protein_residue_names": sorted(PROTEIN_NAMES), "alignment": "C-alpha equal-weight proper Kabsch to frame 0",
                            "precision": "float64", "definition_set": "A-1"}
+        if coordinate_mode == "nojump":
+            from ..storage import fingerprint
+            bonds = self.registry.bond_info(trajectory)
+            self.parameters["nojump_reconstruction"] = (
+                "native-bonded-component-whole-center-v1" if bonds is not None
+                else "legacy-atom-nearest-image-v1")
+            if bonds is not None:
+                self.parameters["nojump_bond_sha256"] = fingerprint(
+                    self.workspace.trajectory_path(trajectory) / "bonds.parquet")["sha256"]
         self.layout = {"chunk_frames": self.chunk, "pair_block": self.pair_block, "fft_block": self.fft_block}
         key = digest([trajectory, self.manifest["identity"], self.parameters, self.layout])
         self.cache_path = workspace.path / "work" / key

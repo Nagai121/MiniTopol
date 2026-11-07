@@ -36,7 +36,7 @@ def fits_planned_reservation(b,m,budget,available):
         if (_buffers is not None and _planner_context is _buffers['context']
                 and _planner_resident_blocks is not None):
             shared=min(b*m,_planner_resident_blocks)*128*72
-        return 1<=m<=2048 and 2*reserved+shared+extra<=min(budget//2,available)
+        return 1<=m<=20480 and 2*reserved+shared+extra<=min(budget//2,available)
 
 def _evaluate(xyz,radii,budget,*,available=None,counts_only=False):
     global _points,_point_context,_buffers,_planner_context,_planner_resident_blocks
@@ -53,7 +53,7 @@ def _evaluate(xyz,radii,budget,*,available=None,counts_only=False):
     if b*m<16:
         return None
     required,reserved_required,cached_extra=_reservation(b,m)
-    if not 1<=m<=2048 or 2*reserved_required+cached_extra>min(budget//2,available):return None
+    if not 1<=m<=20480 or 2*reserved_required+cached_extra>min(budget//2,available):return None
     if np.any((np.abs(xyz)>0)&(np.abs(xyz)<1e-20)):return None
     from ..acceleration import configure_cuda
     configure_cuda()
