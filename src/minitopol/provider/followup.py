@@ -5,9 +5,12 @@ from pathlib import Path
 import threading
 import time
 
+import duckdb
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
+import psutil
 
 from . import advanced_experiments as previous, runtime
 from .followup_ipc import SegmentIPC
@@ -93,16 +96,45 @@ class FollowupProvider(previous.AdvancedProvider):
         key = ('contacts-index', trajectory, tuple((str(path), self._file_version(path)) for path in paths))
         self._detail('contacts_catalog', started)
         def load():
+            limit = min(self.part_budget, psutil.virtual_memory().available // 3)
+            estimate = 0
+            for path in paths:
+                metadata = pq.read_metadata(path)
+                # Parquet dictionary pages understate the size of repeated
+                # strings once expanded into Arrow buffers.
+                estimate += max(metadata.num_rows * 192,
+                                sum(metadata.row_group(i).total_byte_size
+                                    for i in range(metadata.num_row_groups)))
+                if estimate > limit:
+                    return None, 0
             started = time.perf_counter_ns()
-            with self.workspace.catalog() as con:
-                table = con.read_parquet([str(path) for path in paths], union_by_name=True,
-                                         hive_partitioning=False).to_arrow_table()
+            try:
+                with self.workspace.catalog() as con:
+                    table = con.read_parquet([str(path) for path in paths], union_by_name=True,
+                                             hive_partitioning=False).to_arrow_table()
+            except duckdb.OutOfMemoryException:
+                return None, 0
             self._detail('contacts_scan', started)
             indexed = FrameIndex(table)
             return indexed, table.get_total_buffer_size() + indexed.nbytes
 
         indexed = self._cached_part(key, load)
+        if indexed is None:
+            self._record('contacts_scoped_query')
+            return self._scoped_contacts(paths, frames)
         return indexed.select(np.sort(np.asarray(frames, dtype=np.int64)), self._detail, 'contacts')
+
+    def _scoped_contacts(self, paths, frames):
+        start, stop = min(frames), max(frames) + 1
+        if len(frames) == stop - start:
+            predicate = f'frame >= {start} AND frame < {stop}'
+        else:
+            # Frame values are validated integers before reaching the query.
+            predicate = 'frame IN (' + ','.join(map(str, frames)) + ')'
+        with self.workspace.catalog() as con:
+            return con.read_parquet([str(path) for path in paths], union_by_name=True,
+                                    hive_partitioning=False).filter(
+                f'frame IS NULL OR ({predicate})').to_arrow_table()
 
     def _baseline_contacts(self, trajectory, frames):
         started = time.perf_counter_ns()

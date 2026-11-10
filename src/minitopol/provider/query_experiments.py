@@ -95,10 +95,10 @@ class QueryProvider(experiments.ExperimentalProvider):
         def load():
             started = time.perf_counter_ns() if detail else 0
             def materialize():
-                return tuple(virtual_rama_layout.logical_tables(self.workspace, relative))
+                return virtual_rama_layout.logical_tables(self.workspace, relative)
 
             read = getattr(self, '_derived_rama', None)
-            tables = read(key, materialize) if read else materialize()
+            tables = read(key, materialize) if read else tuple(materialize())
             if detail:
                 detail('rama_reconstruct', started)
             size = sum(table.get_total_buffer_size() for table in tables)

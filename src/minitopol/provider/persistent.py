@@ -35,7 +35,7 @@ class PersistentProvider(FollowupProvider):
             if self.build_derived:
                 raise
             self._record('derived_cache_fallback')
-            return materialize()
+            return tuple(materialize())
 
     def _prepare_rama_tables(self, tables):
         return tuple(CompactRama(table) if b'compact-axis' in (table.schema.metadata or {})
