@@ -23,7 +23,7 @@ BASE_FEATURES = 'parts,adaptive,current,coord-prefetch,global,next,catalog'
 
 @dataclass(frozen=True)
 class EncodedTable:
-    data: bytes
+    data: bytes | memoryview
     num_rows: int
     schema: pa.Schema
 
@@ -99,6 +99,14 @@ class AdvancedProvider(ScheduledProvider):
                     self._record('encoded_response_hit')
                     self._record('encoded_response_reused_bytes', len(table.data))
                     return table
+            if name in ('time_correlation', 'dynamic_correlation') and sum(
+                    read_json((self.workspace.path / relative).with_suffix('.json')).get('rows', 0)
+                    for _, relative, _ in key[-1]) >= 8_000_000:
+                encoded = self._encode_large_global(trajectory, name)
+                self._cached_part(key, lambda: (encoded, len(encoded.data)))
+                self._record('encoded_response_miss')
+                self._record('streamed_global_descriptor')
+                return encoded
             table = super()._descriptor(trajectory, name, frames)
             # Encode under the existing serialization stage, after query returns.
             self.local.encoding = (name, key)
@@ -109,6 +117,25 @@ class AdvancedProvider(ScheduledProvider):
             self._record('pipeline_' + name + '_ns_work', elapsed)
             return table
         return super()._descriptor(trajectory, name, frames)
+
+    def _encode_large_global(self, trajectory, name):
+        with self.workspace.catalog() as con:
+            paths = [str(self.workspace.path / row[0]) for row in con.execute(
+                "SELECT COALESCE(p.path,r.path) FROM results r LEFT JOIN result_parts p ON p.result_id=r.id "
+                "WHERE r.trajectory=? AND r.descriptor=? ORDER BY r.id,p.part_index",
+                [trajectory, name]).fetchall()]
+            relation = con.read_parquet(paths, union_by_name=True, hive_partitioning=False)
+            sink = pa.BufferOutputStream()
+            options = pa.ipc.IpcWriteOptions(compression='lz4')
+            read_batches = getattr(relation, 'to_arrow_reader', None) or relation.fetch_record_batch
+            with read_batches(65_536) as batches:
+                schema = batches.schema
+                rows = 0
+                with pa.ipc.new_stream(sink, schema, options=options) as writer:
+                    for batch in batches:
+                        writer.write_batch(batch)
+                        rows += batch.num_rows
+            return EncodedTable(memoryview(sink.getvalue()).cast('B'), rows, schema)
 
     def _encode_descriptor(self, trajectory, name, table):
         if isinstance(table, EncodedTable):

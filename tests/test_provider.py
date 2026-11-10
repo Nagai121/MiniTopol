@@ -461,3 +461,23 @@ def test_workspace_frame_range_on_global_descriptor(prepared):
     frame_data = workspace.query_results(
         descriptor="sample", trajectory=tid, start=2, stop=3)
     assert frame_data["value"].to_pylist() == [20.0]
+
+
+def test_optimized_provider_streams_global_arrow_and_scopes_contacts(prepared):
+    from minitopol.provider.optimized import OptimizedProvider
+
+    workspace, tid = prepared
+    provider = OptimizedProvider(workspace.path, 8 * 1024**2)
+    try:
+        expected = workspace.query_results(trajectory=tid, descriptor="rmsf")
+        streamed = provider._encode_large_global(tid, "rmsf")
+        assert streamed.num_rows == expected.num_rows
+        with pa.ipc.open_stream(pa.BufferReader(streamed.data)) as reader:
+            assert reader.read_all().equals(expected, check_metadata=True)
+
+        provider.part_budget = 0
+        contacts = provider._indexed_contacts(tid, [0, 7])
+        assert contacts["frame"].to_pylist() == [0, None]
+        assert contacts["value"].to_pylist() == [1., .25]
+    finally:
+        provider.cache.close()

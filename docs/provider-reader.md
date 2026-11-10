@@ -25,6 +25,9 @@ descriptor parts. Immutable trajectory-wide descriptor buffers are shared
 between requests. Active leases retain their buffers until release. The Provider
 adapts its cache budget to available memory, with a 6 GiB cap. Working arrays
 and Reader mappings are outside that retained-cache budget.
+Large contact results are queried by requested frame before materialization.
+Large correlation results are encoded in batches as compressed Arrow IPC;
+the Reader exposes the same logical columns and values.
 
 To prepare an optional on-disk cache for random Ramachandran requests:
 
