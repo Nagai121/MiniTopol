@@ -63,3 +63,23 @@ def test_v3_partial_stays_v3_and_preserves_existing_parts(tmp_path, trajectory):
     assert (hashlib.sha256(saved.read_bytes()).hexdigest(), saved.stat().st_mtime_ns) == before
     with store.dataset(tid, definition, layout=layout) as writer:
         assert writer.complete and writer.state['rows'] == 2
+
+
+def test_contact_checkpoint_keeps_width_before_automatic_planning(tmp_path, trajectory):
+    ws = Workspace(tmp_path / "contacts-resume")
+    tid = convert(ws, *trajectory[:2], solvent_resnames=["SOL"], chunk_frames=4)
+    definition = DescriptorDefinition("contacts", "1", "A", "test-only", "dimensionless")
+    definition.register(ws)
+    store = ResultStore(ws)
+    layout = {"pair_block": 32, "output_partitioning": "periodic-spatial-zstd-v1"}
+    table = pa.table({"frame": [0], "value": [1.]})
+    with pytest.raises(KeyboardInterrupt):
+        with store.dataset(tid, definition, layout=layout) as writer:
+            writer.append("state-0-0-0-0", table)
+            raise KeyboardInterrupt
+    with store.dataset(tid, definition, layout={**layout, "spatial_pair_block": 128}) as writer:
+        assert writer.state["layout"] == layout
+        assert writer.has("state-0-0-0-0")
+        writer.append("state-0-0-0-0", table)
+        writer.append("frequency-0-0", table)
+    assert writer.state["rows"] == 2

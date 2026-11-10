@@ -66,9 +66,12 @@ def main(argv=None):
     annotation.add_argument("metadata", help="JSON with chains and optional alpha_carbons, masses, radii; indices refer to A")
     calculate = sub.add_parser("calculate")
     calculate.add_argument("trajectory")
-    calculate.add_argument("--coordinates", required=True, choices=["nonperiodic", "continuous", "nojump"])
+    calculate.add_argument("--coordinates", required=True,
+                           choices=["nonperiodic", "continuous", "nojump"],
+                           help="NoJump assumes motion between saved frames stays within half a box")
     calculate.add_argument("--initial-whole", action="store_true")
-    calculate.add_argument("--half-box-steps", action="store_true")
+    calculate.add_argument("--half-box-steps", action="store_true",
+                           help="Legacy compatibility option. NoJump implies this assumption.")
     calculate.add_argument("--descriptors", nargs="+")
     calculate.add_argument("--memory-mb", type=float, default=128)
     calculate.add_argument("--chunk-frames", type=int)

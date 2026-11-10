@@ -45,8 +45,7 @@ def coordinate_blocks(registry, trajectory, *, mode, initial_whole=False,
                       half_box_steps=False, chunk_frames=None):
     if mode not in ("nonperiodic", "continuous", "nojump"):
         raise ValueError("Select nonperiodic, continuous (already unwrapped), or nojump coordinates explicitly")
-    if mode == "nojump" and not half_box_steps:
-        raise ValueError("NoJump requires the half-box inter-frame motion assumption (half_box_steps=True)")
+    # half_box_steps is accepted for callers using the former opt-in API.
 
     forest = None
     if mode == "nojump" and registry.bond_info(trajectory) is not None:

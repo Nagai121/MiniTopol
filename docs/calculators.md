@@ -13,7 +13,7 @@ SASAの960球面点・原子半径・プローブ半径・遮蔽判定、全フ�
 ```bash
 python -m minitopol --workspace /data/MiniTopol convert teacher.gro teacher.xtc --solvent SOL
 python -m minitopol --workspace /data/MiniTopol annotate TRAJECTORY_ID annotations.json
-python -m minitopol --workspace /data/MiniTopol calculate TRAJECTORY_ID --coordinates nojump --initial-whole --half-box-steps --memory-mb 128
+python -m minitopol --workspace /data/MiniTopol calculate TRAJECTORY_ID --coordinates nojump --initial-whole --memory-mb 128
 ```
 
 `TRAJECTORY_ID` は変換で返されたIDです。`annotations.json` の例は次のとおりです。
@@ -37,13 +37,14 @@ JSON辞書の点番号は文字列です。元GROの番号ではなく、溶媒�
 |---|---|
 | `--coordinates nonperiodic` | 非周期入力として原座標を使う。接触や局所角にも周期距離を適用しない |
 | `--coordinates continuous --initial-whole` | 対象Aの意図した像配置にまとめ、時間的に連続化済みの周期座標。周期距離には保存ボックスを使う |
-| `--coordinates nojump --initial-whole --half-box-steps` | 初期配置が意図した像にまとまり、保存フレーム間の真の移動が半ボックス未満という前提で、要求時にNoJump復元する |
+| `--coordinates nojump` | 結合情報があれば各フレームの結合成分を復元し、成分の幾何中心を追跡する。結合情報がなければ `--initial-whole` で初期像を指定し、原子単位で追跡する |
 
-フラグは入力条件の宣言です。wrapped座標だけから半ボックス以上の移動や、初期配置の誤った像選択を一般に検出・修復できるとは扱いません。
+NoJumpは、保存フレーム間で追跡対象の移動が半ボックス未満と仮定します。`--half-box-steps` は既存コマンドとの互換用に受け付けます。記述子の定義には使用した復元方式を記録します。
 周期距離は直交またはreducedなGROMACS形式の下三角ボックスを対象とします。不正・特異・欠損ボックスは周期計算で拒否します。
 原子間の最小像距離と時間方向のNoJumpは別処理です。Converterは保存時にどちらも実行しません。
 
 `--descriptors rmsd rmsf` のように対象を明示できます。省略時は10種類すべてを実行します。
+周期系の接触計算では、ペア分割による一時ファイルの数が上限や作業メモリ予算を超える場合、接触に使う分割幅を自動で広げます。変更した幅は結果のレイアウトに記録します。途中結果がある場合は、保存済みの分割幅で再開します。
 結果レポートには各記述子のcomplete/failed、定義ID、結果ID、行数、未定義値数または失敗理由を含めます。
 CLIは1種類でも失敗した場合に終了コード1を返します。成功した他の記述子の結果は保持します。
 Python APIは `from minitopol.descriptors import analyze` から利用できます。

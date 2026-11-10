@@ -11,6 +11,26 @@ from minitopol.registry import Registry
 from minitopol.storage import fingerprint
 
 
+@pytest.mark.parametrize("box", [None, [40, 42, 44, 90, 90, 90],
+                                  [40, 42, 44, 75, 85, 80]])
+@pytest.mark.parametrize("solvent_fraction", [0., .8, 1.])
+def test_candidate_partition_preserves_every_retained_pair(box, solvent_fraction):
+    xyz = np.random.default_rng(74).uniform(0, 40, (1000, 3)).astype("f4")
+    donors = np.repeat(np.arange(600), 2)  # D-H rows may share a donor.
+    acceptors = np.arange(1000)
+    solvent = np.arange(1000) < int(1000 * solvent_fraction)
+    original, distances = hb.capped_distance(
+        xyz[donors], xyz[acceptors], max_cutoff=3., min_cutoff=0.,
+        box=box, return_distances=True)
+    keep = ~(solvent[donors[original[:, 0]]] & solvent[acceptors[original[:, 1]]])
+    original, distances = original[keep], distances[keep]
+    actual, values = hb._candidate_pairs(xyz, donors, acceptors, solvent, box, 3.)
+    old_order = np.lexsort((original[:, 1], original[:, 0]))
+    new_order = np.lexsort((actual[:, 1], actual[:, 0]))
+    np.testing.assert_array_equal(actual[new_order], original[old_order])
+    np.testing.assert_array_equal(values[new_order], distances[old_order])
+
+
 def _input(tmp_path):
     u = mda.Universe.empty(
         9, n_residues=3,

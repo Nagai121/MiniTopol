@@ -172,8 +172,11 @@ def test_nojump_and_triclinic_minimum_image(tmp_path):
     blocks = list(registry.coordinate_blocks(tid, mode="nojump", initial_whole=True, half_box_steps=True, chunk_frames=2))
     np.testing.assert_allclose(np.concatenate([b.positions for b in blocks]), np.array([base+[3*f,0,0] for f in range(5)]), atol=1e-4)
     np.testing.assert_allclose(next(registry.blocks(tid)).positions, xyz[:2], atol=1e-4)
-    with pytest.raises(ValueError, match="half-box"):
-        list(registry.coordinate_blocks(tid, mode="nojump", initial_whole=True))
+    implicit = list(registry.coordinate_blocks(tid, mode="nojump", initial_whole=True))
+    np.testing.assert_array_equal(
+        np.concatenate([b.positions for b in implicit]),
+        np.concatenate([b.positions for b in blocks]),
+    )
     with pytest.raises(ValueError, match="initial"):
         list(registry.coordinate_blocks(tid, mode="nojump", half_box_steps=True))
     box = np.array([[10.,0,0],[3,9,0],[2,1,8]])

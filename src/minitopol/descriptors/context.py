@@ -29,6 +29,9 @@ class AnalysisContext:
             raise ValueError("Choose an explicit coordinate_mode: nonperiodic, continuous, nojump")
         if type(initial_whole) is not bool or type(half_box_steps) is not bool:
             raise ValueError("PBC assumptions must be explicitly boolean")
+        # The NoJump mode implies its inter-frame assumption. Preserve the
+        # definition and cache identities used with the former required flag.
+        half_box_steps = coordinate_mode == "nojump" or half_box_steps
         self.workspace, self.trajectory = workspace, trajectory
         self.registry = Registry(workspace)
         self.manifest = self.registry.manifest(trajectory)

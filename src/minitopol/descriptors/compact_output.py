@@ -90,7 +90,6 @@ def _backbone(name,module,ctx,writer):
     assert not tables
 
 def _sasa(ctx,writer):
-    from .sasa_batch import table
     from .gpu_sasa_batch import evaluate_counts, fits_planned_reservation
     batch=_frames(ctx,'sasa');radii=ctx.atomic_values('radii');values_list=[];frames=[];times=[];start=None
     from .shared_gyration import prepare, observe, finish
@@ -126,13 +125,17 @@ def _sasa(ctx,writer):
                 if not np.isfinite(estimate).all() or estimate.min(initial=0)<0 or estimate.max(initial=0)>960:raise IOError('CPU accessibility count bound')
                 results=estimate.astype('<u2')
                 if not np.array_equal((results.astype('f8')/960*fac).view('u8'),floating.view('u8')):raise IOError('CPU accessibility conversion not exact')
-            for local,values in enumerate(results):
-                frame=block.start+offset+local
-                if start is None:start=frame
-                values_list.append(values);frames.append(frame);times.append(block.time[offset+local])
-                if frame+1==last:
-                    writer.append_native(f'frames-{start}-{last}',np.asarray(values_list,dtype='<u2'),np.asarray(frames,dtype='<i8'),np.asarray(times,dtype='<f8'))
-                    values_list=[];frames=[];times=[];start=None
+            if start is None:
+                start = block.start + offset
+            values_list.append(np.asarray(results, dtype='<u2'))
+            frames.append(np.arange(block.start + offset, block.start + stop, dtype='<i8'))
+            times.append(np.asarray(block.time[offset:stop], dtype='<f8'))
+            if block.start + stop == last:
+                writer.append_native(f'frames-{start}-{last}',
+                                     np.concatenate(values_list),
+                                     np.concatenate(frames),
+                                     np.concatenate(times))
+                values_list=[];frames=[];times=[];start=None
             offset=stop
     assert not values_list
     finish(ctx, shared_shape)

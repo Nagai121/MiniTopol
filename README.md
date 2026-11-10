@@ -58,7 +58,7 @@ registry.annotate(trajectory_id, chains=[{"id": "A", "segments": [[0, 1, 2, 3, 4
 
 # 初期配置が意図した像にまとまり、保存フレーム間の移動が半ボックス未満の場合
 report = analyze(workspace, trajectory_id, coordinate_mode="nojump",
-                 initial_whole=True, half_box_steps=True, memory_mb=128)
+                 initial_whole=True, memory_mb=128)
 print(report["status"], report["results"])
 ```
 

@@ -35,7 +35,7 @@ def definition_for(ctx, name):
         parameters.update(probe_angstrom=1.4, sphere_points=960, sphere_method="golden angle; z=1-2*(i+0.5)/n",
                           radii=ctx.properties["radii"], radii_source=ctx.properties["radii_source"],
                           periodic_image_occluders=False, unknown_radius="fail; no silent default")
-        parameters["precision"]='mixed:relative-float32-RN-GPU-points;float64-CPU-fallback-near0.01angstrom'
+        parameters["precision"]='CPU-equivalent float64 predicate via bounded float32 filter; float64 boundary fallback'
     if name == "gyration":
         path = ctx.workspace.trajectory_path(ctx.trajectory) / "system" / "atom_properties.parquet"
         has_mass = path.is_file() and "mass" in pq.read_schema(path).names
@@ -115,6 +115,10 @@ def analyze(workspace, trajectory, *, descriptors=None, coordinate_mode,
                     output_layout = {**output_layout, "output_partitioning": "periodic-spatial-zstd-v1",
                                      "spatial_memory_bytes": ctx.budget,
                                      "spatial_part_rows": max(4096,min(16384,ctx.budget//16384))}
+                    from .periodic_contacts import plan_pair_block
+                    spatial_width = plan_pair_block(len(ctx.residues), ctx.pair_block, ctx.budget)
+                    if spatial_width != ctx.pair_block:
+                        output_layout["spatial_pair_block"] = spatial_width
                 if name in {'sasa','ramachandran','secondary_structure'}:
                     from .compact_output import _frames
                     output_layout={**output_layout,'output_partitioning':'bounded-columnar-v2',

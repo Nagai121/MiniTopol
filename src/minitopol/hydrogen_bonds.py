@@ -25,6 +25,48 @@ SCHEMA = pa.schema([
 ])
 
 
+def _candidate_pairs(xyz, donors, acceptors, solvent, dimensions, cutoff):
+    """Omit solvent-solvent pairs excluded from all three event categories."""
+    from MDAnalysis.lib.distances import _determine_method
+
+    original = _determine_method(xyz[donors], xyz[acceptors], cutoff,
+                                 min_cutoff=0.0, box=dimensions)
+    if dimensions is None or original.__name__ != "_nsgrid_capped":
+        # A nonperiodic grid chooses its artificial box from the selected
+        # atoms. Partitioning changes float32 shifts and reported distances.
+        found, values = capped_distance(
+            xyz[donors], xyz[acceptors], max_cutoff=cutoff,
+            min_cutoff=0.0, box=dimensions, return_distances=True)
+        keep = ~(solvent[donors[found[:, 0]]] & solvent[acceptors[found[:, 1]]])
+        return found[keep], values[keep]
+    pairs, distances = [], []
+    non_solvent_acceptors = np.flatnonzero(~solvent[acceptors])
+    # Non-solvent donors retain every acceptor. Solvent donors can only
+    # contribute to solvent_molecular, with a non-solvent acceptor.
+    for donor_rows, acceptor_rows, reverse in (
+            (np.flatnonzero(~solvent[donors]), np.arange(len(acceptors)), False),
+            (np.flatnonzero(solvent[donors]), non_solvent_acceptors, True)):
+        if not len(donor_rows) or not len(acceptor_rows):
+            continue
+        reference, configuration = xyz[donors[donor_rows]], xyz[acceptors[acceptor_rows]]
+        if reverse:
+            # Query the few solute acceptors against the water donor grid.
+            reference, configuration = configuration, reference
+        found, values = capped_distance(
+            reference, configuration,
+            max_cutoff=cutoff, min_cutoff=0.0, box=dimensions,
+            return_distances=True, method="nsgrid")
+        if len(found):
+            if reverse:
+                found = found[:, ::-1]
+            pairs.append(np.column_stack((donor_rows[found[:, 0]],
+                                          acceptor_rows[found[:, 1]])))
+            distances.append(values)
+    if not pairs:
+        return np.empty((0, 2), dtype=np.int64), np.empty(0, dtype=np.float64)
+    return np.concatenate(pairs), np.concatenate(distances)
+
+
 def _validate_mapping(mapping, source_count, tpr_count):
     if (not isinstance(mapping, (list, tuple)) or len(mapping) != source_count
             or any(type(x) is not int or x < 0 or x >= tpr_count for x in mapping)
@@ -233,10 +275,9 @@ class HydrogenBondStore:
             dims = box_dimensions(box) if self.periodic else None
             if not len(self.acceptors):
                 continue
-            matches, distances = capped_distance(
-                xyz[self.donors], xyz[self.acceptors],
-                max_cutoff=self.distance_cutoff, min_cutoff=0.0,
-                box=dims, return_distances=True)
+            matches, distances = _candidate_pairs(
+                xyz, self.donors, self.acceptors, self.solvent, dims,
+                self.distance_cutoff)
             if not len(matches):
                 continue
             d_indices = matches[:, 0]

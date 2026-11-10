@@ -43,4 +43,21 @@ def configure_cuda():
             for directory in directories:
                 if directory.is_dir():
                     _dll_directories.append(os.add_dll_directory(str(directory)))
+            if runtime and any((runtime / "bin").glob("cudart*.dll")):
+                # NVIDIA's wheels split NVVM and cudart into separate roots.
+                # Numba 0.68 searches CUDA_HOME/bin for the versioned cudart
+                # filename; AddDllDirectory alone cannot resolve "cudart.dll".
+                # Keep NVVM/libdevice discovery and any working user toolkit.
+                try:
+                    from numba.cuda.cuda_paths import get_cuda_paths
+                    from numba.misc.findlib import find_lib
+                except ImportError:
+                    pass
+                else:
+                    paths = get_cuda_paths()
+                    current = paths["cudalib_dir"]
+                    fallback = str(runtime / "bin")
+                    if not find_lib("cudart", current.info) and find_lib("cudart", fallback):
+                        paths["cudalib_dir"] = current._replace(
+                            by="NVIDIA runtime wheel", info=fallback)
         _configured = True

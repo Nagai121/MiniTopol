@@ -69,3 +69,39 @@ def test_unsupported_inputs_use_original(case):
     if case=='large':xyz[0,0]=1e7
     if case=='budget':budget=1
     with pytest.raises(contacts.UseOriginal):contacts._frame_contacts(xyz,box,np.arange(5),np.triu(np.ones((5,5),bool),1),budget)
+
+
+def test_large_periodic_contacts_automatically_widen_pair_block(tmp_path):
+    from test_scientific import import_frames
+    from minitopol.descriptors import analyze
+    from minitopol.storage import read_json
+
+    # 993 residues require 528 scratch streams at width 32.
+    grid = np.indices((10, 10, 10)).reshape(3, -1).T[:993] * 10.
+    xyz = np.repeat(grid[None], 2, axis=0)
+    xyz[0, 1] = [1., 0., 0.]
+    ws, tid = import_frames(tmp_path / "wide", xyz, residue_indices=list(range(len(grid))))
+    report = analyze(ws, tid, descriptors=["contacts"], coordinate_mode="continuous",
+                     initial_whole=True, memory_mb=1024)
+    result = report["results"]["contacts"]
+    assert result["status"] == "complete", result
+    root = ws.path / "descriptors" / "contacts" / tid / "A"
+    saved = read_json(root / (result["result_id"] + ".json"))
+    assert saved["layout"]["pair_block"] == 32
+    assert saved["layout"]["spatial_pair_block"] == 64
+    assert any(p["key"].startswith("state-compact-") for p in saved["parts"])
+    rows = ws.query_results(trajectory=tid, descriptor="contacts").to_pylist()
+    assert len(rows) == 2
+    state, = [r for r in rows if r["level"] == "state"]
+    frequency, = [r for r in rows if r["level"] == "frequency"]
+    from minitopol import Registry
+    block = next(Registry(ws).blocks(tid))
+    positions = block.positions[0]
+    distance = distance_array(positions[:1], positions[1:2], box=box_dimensions(block.box[0]))[0, 0]
+    assert (state["frame"], state["residue_i"], state["residue_j"]) == (0, 0, 1)
+    assert state["distance_angstrom"] == distance
+    assert (frequency["contact_frames"], frequency["frames"], frequency["value"]) == (1, 2, .5)
+
+
+def test_widening_uses_intermediate_width_when_doubling_exceeds_budget():
+    assert contacts.plan_pair_block(257, 32, 36 * 1024**2) == 192

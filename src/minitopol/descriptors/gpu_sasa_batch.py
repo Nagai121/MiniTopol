@@ -92,13 +92,12 @@ def _evaluate(xyz,radii,budget,*,available=None,counts_only=False):
         lengths=cuda.device_array((b,m),dtype=np.int32)
         neighbors=cuda.device_array((b,m,128),dtype=np.int32);bad=cuda.to_device(np.zeros(1,dtype=np.int32))
         counts=cuda.device_array((b,m),dtype=np.int64)
-        if _buffers is None:
-            _buffers=dict(context=context,shape=(b,m),xyz=dx,radii=dr,lengths=lengths,neighbors=neighbors,bad=bad,counts=counts,radii_bytes=key,bytes=sum(a.nbytes for a in (dx,dr,lengths,neighbors,bad,counts)))
+        _buffers=dict(context=context,shape=(b,m),xyz=dx,radii=dr,lengths=lengths,neighbors=neighbors,bad=bad,counts=counts,radii_bytes=key,bytes=sum(a.nbytes for a in (dx,dr,lengths,neighbors,bad,counts)))
     margin=1e-6*max(1.,float(np.max(np.abs(xyz),initial=0)))
     direct_neighbors[b*m,128](dx,dr,float(inflated.max()),margin,lengths,neighbors,bad)
     if bad.copy_to_host()[0]:return None
     sort_nearest[b*m,128](dx,lengths,neighbors)
-    fused_counts[b*m,512](dx,dr,_points,lengths,neighbors,counts)
+    fused_counts[b*m,256](dx,dr,_points,lengths,neighbors,counts)
     accessible=counts.copy_to_host();cuda.synchronize()
     if counts_only:
         if accessible.min(initial=0)<0 or accessible.max(initial=0)>960:raise IOError('GPU accessibility count bound')

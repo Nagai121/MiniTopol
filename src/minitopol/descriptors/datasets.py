@@ -92,7 +92,14 @@ class DatasetWriter:
             elif self.progress.exists():
                 from .progress_journal import load
                 self.state, self.journal = load(self.progress)
-                if self.state["info"] != self.info or self.state["layout"] != self.layout:
+                expected_layout = self.layout
+                if (self.definition.name == "contacts"
+                        and "spatial_pair_block" in expected_layout
+                        and "spatial_pair_block" not in self.state["layout"]):
+                    # Old contact checkpoints keep their original pair width.
+                    expected_layout = {key: value for key, value in expected_layout.items()
+                                       if key != "spatial_pair_block"}
+                if self.state["info"] != self.info or self.state["layout"] != expected_layout:
                     raise ValueError("Resume the unfinished dataset with its original processing layout")
                 for index, part in enumerate(self.state["parts"]):
                     if part["file"] != f"{self.result_id}/part-{index:08d}.parquet":

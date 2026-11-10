@@ -7,6 +7,7 @@ periodic implementation. Scratch is verified before any result publication.
 """
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+from math import isqrt
 from collections import deque
 import tempfile
 from pathlib import Path
@@ -112,6 +113,40 @@ def _ordered_frames(positions,boxes,atom_residue,allowed,budget):
         finally:
             for _,future in pending:future.cancel()
 
+MAX_SCRATCH_STREAMS = 512
+NATIVE_CONTEXT_BYTES = 4 * 1024**2
+
+
+def _stream_count(residues, pair_block):
+    blocks = (residues + pair_block - 1) // pair_block
+    return blocks * (blocks + 1) // 2
+
+
+def _scratch_kind(streams, budget):
+    if streams > MAX_SCRATCH_STREAMS:
+        return None
+    if streams * NATIVE_CONTEXT_BYTES <= budget // 3:
+        return "native"
+    from .framed_contact_scratch import reserve_bytes
+    if reserve_bytes(streams) <= budget // 3:
+        return "framed"
+    return None
+
+
+def plan_pair_block(residues, requested, budget):
+    """Widen periodic spatial partitions only when the scratch plan cannot fit."""
+    if budget < 32 * 1024**2 or 9 * residues**2 > budget // 4:
+        return requested
+    # Publication holds a dense count tile and Python residue pairs.
+    max_width = min(residues, isqrt(budget // (8 * 128)))
+    width = requested
+    while _scratch_kind(_stream_count(residues, width), budget) is None:
+        if width >= max_width:
+            return requested
+        width = min(max_width, 2 * width)
+    return width
+
+
 def calculate(ctx, writer):
     from .contacts import eligible, SCHEMA
     from .context import PROTEIN_NAMES
@@ -125,16 +160,13 @@ def calculate(ctx, writer):
         raise ValueError('Contact neighbor exclusions require explicit continuous-segment annotations for protein residues')
     scratch_writer, scratch_verify, scratch_reader = CompressedScratch, verify_scratch, open_reader
     count = len(ctx.residues)
-    blocks = (count + ctx.pair_block - 1) // ctx.pair_block
-    # Bound handles and total Python buffering; unusual systems retain the old path.
-    if blocks * (blocks + 1) // 2 > 512:
-        return original(ctx, writer)
-    # Conservative native Zstd context reservation: at most one third of the
-    # unchanged working budget. More streams retain the original algorithm.
-    if blocks*(blocks+1)//2*4*1024**2>ctx.budget//3:
-        from .framed_contact_scratch import FramedScratch, verify, open_reader as framed_reader, reserve_bytes
-        if reserve_bytes(blocks*(blocks+1)//2)>ctx.budget//3:
-            raise UseOriginal()
+    pair_block = writer.state["layout"].get("spatial_pair_block", ctx.pair_block)
+    blocks = (count + pair_block - 1) // pair_block
+    scratch_kind = _scratch_kind(_stream_count(count, pair_block), ctx.budget)
+    if scratch_kind is None:
+        raise UseOriginal()
+    if scratch_kind == "framed":
+        from .framed_contact_scratch import FramedScratch, verify, open_reader as framed_reader
         scratch_writer, scratch_verify, scratch_reader = FramedScratch, verify, framed_reader
     if ctx.budget < 32 * 1024**2 or 9 * count**2 > ctx.budget // 4:
         raise UseOriginal()
@@ -153,7 +185,7 @@ def calculate(ctx, writer):
             for block in ctx.registry.blocks(ctx.trajectory, chunk_frames=ctx.chunk):
                 for offset,(rr,ss,distances) in _ordered_frames(block.positions,block.box,atom_residue,allowed,ctx.budget):
                     frame=block.start+offset;times[frame]=block.time[offset]
-                    keys = (rr // ctx.pair_block) * blocks + ss // ctx.pair_block
+                    keys = (rr // pair_block) * blocks + ss // pair_block
                     order = np.argsort(keys, kind='stable'); keys = keys[order]
                     rr = rr[order]; ss = ss[order]; distances=distances[order]
                     boundaries = np.r_[0, np.flatnonzero(keys[1:] != keys[:-1]) + 1, len(keys)]
@@ -177,16 +209,16 @@ def calculate(ctx, writer):
                 path = Path(folder) / str(key)
                 scratch_verify(path,files[key],lengths[key],expected.digest(),DTYPE.itemsize)
             limit = max(4096, min(65536, ctx.budget // 4096))
-            for left in range(0, count, ctx.pair_block):
-                for right in range(left, count, ctx.pair_block):
+            for left in range(0, count, pair_block):
+                for right in range(left, count, pair_block):
                     key = f'frequency-{left}-{right}'
                     if writer.has(key): continue
-                    pairs = [(int(r), int(s)) for r in residues[left:left+ctx.pair_block]
-                             for s in residues[right:right+ctx.pair_block] if r < s and eligible(ctx, int(r), int(s))]
+                    pairs = [(int(r), int(s)) for r in residues[left:left+pair_block]
+                             for s in residues[right:right+pair_block] if r < s and eligible(ctx, int(r), int(s))]
                     if not pairs:
                         writer.append(key, pa.Table.from_pylist([], schema=SCHEMA)); continue
-                    counts = np.zeros((ctx.pair_block, ctx.pair_block), dtype=np.int64)
-                    path = Path(folder) / str((left // ctx.pair_block) * blocks + right // ctx.pair_block)
+                    counts = np.zeros((pair_block, pair_block), dtype=np.int64)
+                    path = Path(folder) / str((left // pair_block) * blocks + right // pair_block)
                     part = 0; last_count = 0
                     if path.exists():
                         with scratch_reader(path) as file:

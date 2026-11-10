@@ -22,6 +22,9 @@ def test_nvidia_packages_are_discovered_without_copying_libraries(tmp_path, monk
     nvcc, runtime = tmp_path / "nvcc", tmp_path / "runtime"
     for path in (nvcc / "bin", nvcc / "nvvm" / "bin", runtime / "bin"):
         path.mkdir(parents=True)
+    # Register even an initially absent key: configure_cuda sets it directly.
+    # delenv alone does not restore an absent key after that mutation.
+    monkeypatch.setenv("CUDA_HOME", "")
     monkeypatch.delenv("CUDA_HOME", raising=False)
     monkeypatch.delenv("CUDA_PATH", raising=False)
     monkeypatch.setattr(acceleration, "_configured", False)

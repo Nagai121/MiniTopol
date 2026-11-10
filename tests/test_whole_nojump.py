@@ -84,10 +84,9 @@ def test_coordinate_blocks_use_native_whole_when_bonds_exist():
     registry = RegistryStub()
     for chunk in (1, 2, 5):
         result = np.concatenate([b.positions for b in coordinate_blocks(
-            registry, "test", mode="nojump", initial_whole=False,
-            half_box_steps=True, chunk_frames=chunk)])
+            registry, "test", mode="nojump", chunk_frames=chunk)])
         np.testing.assert_allclose(result, expected, atol=1e-5)
     np.testing.assert_allclose(stored, expected % 10., atol=1e-5)
-    with pytest.raises(ValueError, match="half-box"):
-        list(coordinate_blocks(registry, "test", mode="nojump",
-                               half_box_steps=False))
+    legacy = np.concatenate([b.positions for b in coordinate_blocks(
+        registry, "test", mode="nojump", half_box_steps=True)])
+    np.testing.assert_array_equal(legacy, result)
