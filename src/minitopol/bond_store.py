@@ -47,8 +47,10 @@ class BondStore:
             existing = con.execute("SELECT info FROM bond_graphs WHERE trajectory = ?",
                                    [trajectory]).fetchone()
             serialized = canonical(record)
-            if existing and existing[0] != serialized:
-                raise ValueError("Different bond graph already registered for this A")
+            if existing:
+                if existing[0] != serialized:
+                    raise ValueError("Different bond graph already registered for this A")
+                return
             con.execute("INSERT INTO bond_graphs VALUES (?, ?) ON CONFLICT DO NOTHING",
                         [trajectory, serialized])
 

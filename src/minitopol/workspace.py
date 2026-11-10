@@ -145,7 +145,7 @@ class Workspace:
         if descriptor in ('ramachandran', 'sasa') and representation not in (None, 'A'):
             raise LookupError("No completed descriptor results match the representation")
         if descriptor == 'ramachandran':
-            from .descriptors.virtual_rama_store import query
+            from .descriptors.virtual_rama_layout import query
             return query(self,trajectory=trajectory,definition_id=definition_id,columns=columns,start=start,stop=stop)
         if descriptor == 'sasa':
             from .descriptors.count_store import query

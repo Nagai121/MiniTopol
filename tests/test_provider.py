@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 import pyarrow as pa
+import psutil
 import pytest
 
 from minitopol import Workspace, convert
@@ -47,6 +48,82 @@ def _shm_data(part):
         return data
     finally:
         segment.close()
+
+
+def test_registry_atomic_replace_retries_transient_access_failure(tmp_path, monkeypatch):
+    from minitopol.provider import runtime
+    target = tmp_path / 'provider.json'
+    monkeypatch.setenv('MINITOPOL_PROVIDER_REGISTRY', str(target))
+    target.write_text('{"old":true}', encoding='utf-8')
+    original = runtime.os.replace
+    attempts = []
+
+    def replace(source, destination):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise PermissionError('simulated Windows reader holds destination')
+        return original(source, destination)
+
+    monkeypatch.setattr(runtime.os, 'replace', replace)
+    runtime.write_registry({'new': True})
+    assert len(attempts) == 3
+    assert json.loads(target.read_text(encoding='utf-8')) == {'new': True}
+    assert not list(tmp_path.glob('*.tmp'))
+
+
+def test_registry_failed_publication_preserves_previous_file(tmp_path, monkeypatch):
+    from minitopol.provider import runtime
+    target = tmp_path / 'provider.json'
+    monkeypatch.setenv('MINITOPOL_PROVIDER_REGISTRY', str(target))
+    target.write_text('{"old":true}', encoding='utf-8')
+
+    def refuse(*args):
+        raise PermissionError('permanent denial')
+
+    monkeypatch.setattr(runtime.os, 'replace', refuse)
+    with pytest.raises(PermissionError):
+        runtime.write_registry({'new': True})
+    assert json.loads(target.read_text(encoding='utf-8')) == {'old': True}
+    assert not list(tmp_path.glob('*.tmp'))
+
+
+@pytest.mark.parametrize('variant', [
+    'decoded_cache', 'sparse_query', 'coordinate_catalog', 'payload_views', 'parallel_decode'])
+def test_experimental_provider_preserves_values_and_leases(prepared, variant):
+    from minitopol.provider.experiments import ExperimentalProvider
+    workspace, tid = prepared
+    ExperimentalProvider.variant = variant
+    baseline = DataProvider(workspace.path, budget=16 * 1024**2)
+    candidate = ExperimentalProvider(workspace.path, budget=16 * 1024**2)
+    try:
+        assert candidate.cache.budget + candidate.decoded_budget == 16 * 1024**2
+        for coords, descriptors in [(True, []), (True, ['sample', 'contacts', 'rmsf']),
+                                     (False, ['sample', 'contacts', 'rmsf'])]:
+            request = {'trajectory': tid, 'coordinates': coords,
+                       'descriptors': descriptors, 'frames': [8, 0, 4]}
+            first = baseline.get(request)
+            second = candidate.get(request)
+            hit = candidate.get(request)
+            assert candidate.cache.status()['active_leases'] == 2
+            expected = {p['name']: p for p in first['buffers']}
+            for part in second['buffers']:
+                actual, reference = _shm_data(part), _shm_data(expected[part['name']])
+                if part['format'] == 'arrow-ipc':
+                    actual = pa.ipc.open_stream(actual).read_all()
+                    reference = pa.ipc.open_stream(reference).read_all()
+                    assert actual.equals(reference, check_metadata=False)
+                else:
+                    assert actual == reference
+            assert [p['shm'] for p in second['buffers']] == [p['shm'] for p in hit['buffers']]
+            candidate.cache.release(second['lease'])
+            for part in hit['buffers']:
+                _shm_data(part)
+            candidate.cache.release(hit['lease'])
+            baseline.cache.release(first['lease'])
+            assert candidate.cache.status()['active_leases'] == 0
+    finally:
+        candidate.cache.close()
+        baseline.cache.close()
 
 
 def test_coordinates_random_frame_order_and_subset(prepared):
@@ -137,7 +214,12 @@ def test_http_service_lifecycle(prepared, tmp_path, monkeypatch):
             with urlopen(req, timeout=10) as response:
                 return json.load(response)
         status = call("status")
-        assert status["pid"] == session["pid"] == process.pid
+        assert status["pid"] == session["pid"]
+        # Windows venv python.exe can be a launcher for the actual interpreter.
+        # The serving process must still belong to the process we launched.
+        if session["pid"] != process.pid:
+            assert os.name == "nt"
+            assert process.pid in [parent.pid for parent in psutil.Process(session["pid"]).parents()]
         assert status["budget_bytes"] > 0
         assert tid in [row["id"] for row in call("list")["trajectories"]]
         fetched = call("get", {"trajectory": tid, "coordinates": True, "frames": [1]})

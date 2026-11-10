@@ -20,10 +20,24 @@ API v1:
 
 Each get returns a lease, full requested frame order and distinct named shared-memory buffers. Coordinates, time and periodic box are independent little-endian ndarray buffers with dtype/shape/unit. Descriptors, including sparse or null-valued tables, are separate Arrow IPC streams. Descriptor rows with a frame field are frame-filtered; global descriptors remain trajectory-wide; contacts also retains aggregate frequency rows.
 
-The Provider uses MiniTopol's Registry.blocks for Zarr coordinates and Workspace.query_results for completed logical descriptors (including SASA and Ramachandran). Requests are grouped by source chunk when reading positions. Repeat identical requests share immutable cached buffers. Distinct requests also reuse a bounded LRU of decoded source chunks, indexed by trajectory identity and source frame interval. Buffers are never evicted while leased; release makes them eligible for LRU reclamation. Both caches share the original startup RAM allowance. The startup cap is 30% of available RAM (not total installed RAM), allocated on demand; large requests must be subdivided. Memory pressure triggers reclaim of unleased entries.
+The Provider caches complete responses, decoded coordinate chunks, and
+descriptor parts. Immutable trajectory-wide descriptor buffers are shared
+between requests. Active leases retain their buffers until release. The Provider
+adapts its cache budget to available memory, with a 6 GiB cap. Working arrays
+and Reader mappings are outside that retained-cache budget.
 
-Known implementation limits: shared-memory response reuse still keys complete requests, while independently requested frames reuse previously decoded source chunks; intermediate decode/Arrow allocations can exceed the shared-cache cap; the service currently serializes cache misses; record layout remains stable but capacity and peak throughput are unmeasured. These are intended targets for later performance profiling, not claimed benchmarks. No training code is required for these integration tests.
+To prepare an optional on-disk cache for random Ramachandran requests:
 
+~~~bash
+python -m minitopol.provider prepare-ramachandran TRAJECTORY_ID --workspace /path/to/BaseTraj_Workspace
+~~~
+
+The derived files live under `work/provider-derived` by default.
+`MINITOPOL_DERIVED_CACHE` overrides the directory for both preparation and
+serving. A missing or invalid cache falls back to the published result.
+Virtual recipes retain their scientific source and environment checks.
+For a known upcoming descriptor batch, an updated Reader can supply
+`next_frames` with up to 1,024 indices.
 ## Optional Provider phase profiling (append-only TXT)
 
 Set `MINITOPOL_PROVIDER_PROFILE=1` in the **Provider process environment**

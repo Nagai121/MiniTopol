@@ -37,7 +37,14 @@ def registry_path():
 
 def read_registry():
     path = registry_path()
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
 
 
 def write_registry(data):
@@ -50,7 +57,17 @@ def write_registry(data):
             json.dump(data, stream, ensure_ascii=False, separators=(",", ":"))
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        # Windows readers may briefly hold the destination without delete
+        # sharing. Keep the publication atomic and retry only access failures.
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -400,13 +417,17 @@ class DataProvider:
         if trace is not None:
             trace.increment("requested_frames", len(frames))
         with _stage(trace, "descriptor_catalog_lookup"):
-            with self.workspace.catalog() as con:
-                # Result IDs identify immutable descriptor partitions. Their
-                # set versions responses when fresh results are published.
-                catalog_rows = con.execute(
-                    "SELECT descriptor, id FROM results WHERE trajectory=? "
-                    "ORDER BY descriptor, id", [tid]).fetchall()
-                available = {name for name, _ in catalog_rows}
+            if not descriptors and getattr(self, "skip_coordinate_catalog", False):
+                catalog_rows = []
+                available = set()
+            else:
+                with self.workspace.catalog() as con:
+                    # Result IDs identify immutable descriptor partitions. Their
+                    # set versions responses when fresh results are published.
+                    catalog_rows = con.execute(
+                        "SELECT descriptor, id FROM results WHERE trajectory=? "
+                        "ORDER BY descriptor, id", [tid]).fetchall()
+                    available = {name for name, _ in catalog_rows}
         if descriptors == ["all"]:
             descriptors = sorted(available)
             if not descriptors:
@@ -443,10 +464,10 @@ class DataProvider:
                 with _stage(trace, "descriptor_query"):
                     table = self._descriptor(tid, name, frames)
                 with _stage(trace, "descriptor_arrow_encode"):
-                    sink = pa.BufferOutputStream()
-                    with pa.ipc.new_stream(sink, table.schema) as writer:
-                        writer.write_table(table)
-                    data = sink.getvalue().to_pybytes()
+                    encoded_started = time.perf_counter_ns()
+                    data = self._encode_descriptor(tid, name, table)
+                    if trace is not None:
+                        trace.increment('encode_' + name + '_ns_work', time.perf_counter_ns() - encoded_started)
                 if trace is not None:
                     trace.increment("descriptor_rows", table.num_rows)
                 blocks.append(("descriptor:" + name, data,
@@ -456,6 +477,13 @@ class DataProvider:
 
         return {**self.cache.request(key, build, trace=trace), "trajectory": tid, "frames": frames,
                 "atoms": atoms, "coordinates": coords, "descriptors": descriptors}
+
+    def _encode_descriptor(self, trajectory, name, table):
+        sink = pa.BufferOutputStream()
+        with pa.ipc.new_stream(sink, table.schema) as writer:
+            writer.write_table(table)
+        buffer = sink.getvalue()
+        return memoryview(buffer).cast('B') if getattr(self, "payload_views", False) else buffer.to_pybytes()
 
     @staticmethod
     def _array(name, array, unit):
@@ -554,7 +582,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": f"{type(error).__name__}: {error}"})
 
 
-def serve():
+def serve(*, budget_bytes=None, provider_factory=None):
     path = registry_path()
     with FileLock(str(path) + ".registration.lock"):
         config = read_registry()
@@ -568,8 +596,17 @@ def serve():
     session = None
     try:
         available = psutil.virtual_memory().available
-        budget = max(1, int(available * 0.30))
-        provider = DataProvider(config["workspace"], budget)
+        # Retain up to the measured 6 GiB and leave room for transient arrays.
+        budget = min(6 * 1024**3, max(1, int(min(available * 0.55,
+                                               max(available * 0.15, available - 8 * 1024**3)))))
+        if budget_bytes is not None:
+            if type(budget_bytes) is not int or not 0 < budget_bytes <= budget:
+                raise ValueError('Explicit budget exceeds the startup available-RAM allowance')
+            budget = budget_bytes
+        if provider_factory is None:
+            from .optimized import OptimizedProvider
+            provider_factory = OptimizedProvider
+        provider = provider_factory(config["workspace"], budget)
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.daemon_threads = True
         server.provider = provider
@@ -604,10 +641,21 @@ def main(argv=None):
     registration = sub.add_parser("register", help="Register this installation and a Workspace")
     registration.add_argument("--workspace", default=None)
     sub.add_parser("serve", help="Run one shared local Provider process")
+    preparation = sub.add_parser("prepare-ramachandran", help="Prepare the derived Reader cache")
+    preparation.add_argument("trajectory")
+    preparation.add_argument("--workspace", default=None)
     args = parser.parse_args(argv)
     if args.command == "register":
         workspace = args.workspace or Workspace.default_path()
         print(json.dumps(register(workspace), ensure_ascii=False))
+    elif args.command == "prepare-ramachandran":
+        from .optimized import OptimizedProvider
+        workspace = args.workspace or Workspace.default_path()
+        provider = OptimizedProvider(workspace, 512 * 1024**2)
+        try:
+            print(json.dumps(provider.prepare_ramachandran(args.trajectory), ensure_ascii=False))
+        finally:
+            provider.cache.close()
     else:
         return serve()
     return 0
