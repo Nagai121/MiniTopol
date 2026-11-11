@@ -91,9 +91,11 @@ def _frame_contacts(xyz,box,atom_residue,allowed,budget):
 
 def _ordered_frames(positions,boxes,atom_residue,allowed,budget):
     workers=next((w for w in (4,2) if 9*w*len(allowed)**2+len(atom_residue)*256*w<=budget//8),1)
-    if workers==1:
+    if workers<=2:
+        # A one-result window serializes both computation and consumption.
+        # Keep the same per-frame budget and skip the thread handoff.
         for i,xyz in enumerate(positions):
-            yield i,_frame_contacts(xyz,boxes[i],atom_residue,allowed,budget)
+            yield i,_frame_contacts(xyz,boxes[i],atom_residue,allowed,budget//workers)
         return
     # Reserve one of the old workers-sized result slots for the caller's
     # current spool record. At most workers-1 future results are retained.
@@ -214,7 +216,7 @@ def calculate(ctx, writer):
                     key = f'frequency-{left}-{right}'
                     if writer.has(key): continue
                     pairs = [(int(r), int(s)) for r in residues[left:left+pair_block]
-                             for s in residues[right:right+pair_block] if r < s and eligible(ctx, int(r), int(s))]
+                             for s in residues[right:right+pair_block] if r < s and allowed[ordinal[r], ordinal[s]]]
                     if not pairs:
                         writer.append(key, pa.Table.from_pylist([], schema=SCHEMA)); continue
                     counts = np.zeros((pair_block, pair_block), dtype=np.int64)

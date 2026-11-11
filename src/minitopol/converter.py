@@ -131,14 +131,14 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
                     boxes = np.empty((stop - start, 3, 3), dtype=np.float32)
                 def source_frames():
                     for index, ts in enumerate(universe.trajectory[start:stop]):
-                        box = (ts.triclinic_dimensions.copy()
-                               if ts.triclinic_dimensions is not None
-                               else np.full((3, 3), np.nan))
+                        dimensions = ts.triclinic_dimensions
+                        box = dimensions.copy() if dimensions is not None else np.full((3, 3), np.nan)
+                        xyz = ts.positions
                         if need_a:
-                            positions[index] = ts.positions[selected]
+                            positions[index] = xyz[selected]
                             time[index] = ts.time
                             boxes[index] = box
-                        yield ts.positions, box
+                        yield xyz, box
                 if need_hb:
                     try:
                         hb_writer.append(start, stop, source_frames())

@@ -25,30 +25,52 @@ SCHEMA = pa.schema([
 ])
 
 
-def _candidate_pairs(xyz, donors, acceptors, solvent, dimensions, cutoff):
+def _candidate_plan(donors, acceptors, solvent):
+    donor_solvent = solvent[donors]
+    acceptor_solvent = solvent[acceptors]
+    groups = []
+    for donor_rows, acceptor_rows, reverse in (
+            (np.flatnonzero(~donor_solvent), np.arange(len(acceptors)), False),
+            (np.flatnonzero(donor_solvent), np.flatnonzero(~acceptor_solvent), True)):
+        if len(donor_rows) and len(acceptor_rows):
+            # The first group uses all acceptors in their original order.
+            expansion = None
+            if reverse:
+                order = np.argsort(donors[donor_rows], kind="stable")
+                sorted_rows = donor_rows[order]
+                _, starts, counts = np.unique(donors[sorted_rows], return_index=True,
+                                              return_counts=True)
+                if len(starts) != len(donor_rows):
+                    expansion = sorted_rows, starts, counts
+                    donor_rows = sorted_rows[starts]
+            groups.append((donor_rows, acceptor_rows, reverse, expansion))
+    return donor_solvent, acceptor_solvent, groups
+
+
+def _candidate_pairs(xyz, donors, acceptors, solvent, dimensions, cutoff, plan=None):
     """Omit solvent-solvent pairs excluded from all three event categories."""
     from MDAnalysis.lib.distances import _determine_method
 
-    original = _determine_method(xyz[donors], xyz[acceptors], cutoff,
+    if plan is None:
+        plan = _candidate_plan(donors, acceptors, solvent)
+    donor_solvent, acceptor_solvent, groups = plan
+    donor_xyz, acceptor_xyz = xyz[donors], xyz[acceptors]
+    original = _determine_method(donor_xyz, acceptor_xyz, cutoff,
                                  min_cutoff=0.0, box=dimensions)
     if dimensions is None or original.__name__ != "_nsgrid_capped":
         # A nonperiodic grid chooses its artificial box from the selected
         # atoms. Partitioning changes float32 shifts and reported distances.
         found, values = capped_distance(
-            xyz[donors], xyz[acceptors], max_cutoff=cutoff,
+            donor_xyz, acceptor_xyz, max_cutoff=cutoff,
             min_cutoff=0.0, box=dimensions, return_distances=True)
-        keep = ~(solvent[donors[found[:, 0]]] & solvent[acceptors[found[:, 1]]])
+        keep = ~(donor_solvent[found[:, 0]] & acceptor_solvent[found[:, 1]])
         return found[keep], values[keep]
     pairs, distances = [], []
-    non_solvent_acceptors = np.flatnonzero(~solvent[acceptors])
     # Non-solvent donors retain every acceptor. Solvent donors can only
     # contribute to solvent_molecular, with a non-solvent acceptor.
-    for donor_rows, acceptor_rows, reverse in (
-            (np.flatnonzero(~solvent[donors]), np.arange(len(acceptors)), False),
-            (np.flatnonzero(solvent[donors]), non_solvent_acceptors, True)):
-        if not len(donor_rows) or not len(acceptor_rows):
-            continue
-        reference, configuration = xyz[donors[donor_rows]], xyz[acceptors[acceptor_rows]]
+    for donor_rows, acceptor_rows, reverse, expansion in groups:
+        reference = donor_xyz[donor_rows]
+        configuration = acceptor_xyz[acceptor_rows] if reverse else acceptor_xyz
         if reverse:
             # Query the few solute acceptors against the water donor grid.
             reference, configuration = configuration, reference
@@ -57,11 +79,25 @@ def _candidate_pairs(xyz, donors, acceptors, solvent, dimensions, cutoff):
             max_cutoff=cutoff, min_cutoff=0.0, box=dimensions,
             return_distances=True, method="nsgrid")
         if len(found):
-            if reverse:
-                found = found[:, ::-1]
-            pairs.append(np.column_stack((donor_rows[found[:, 0]],
-                                          acceptor_rows[found[:, 1]])))
-            distances.append(values)
+            if expansion is not None:
+                # All attached H atoms share the donor's position. Expand
+                # the exact native distance back to every original D-H row.
+                # Published events are sorted independently of grid order.
+                original_rows, starts, counts = expansion
+                donor_hits = found[:, 1]
+                repeats = counts[donor_hits]
+                ends = np.cumsum(repeats)
+                offsets = np.arange(ends[-1]) - np.repeat(ends - repeats, repeats)
+                rows = original_rows[np.repeat(starts[donor_hits], repeats) + offsets]
+                partners = np.repeat(acceptor_rows[found[:, 0]], repeats)
+                pairs.append(np.column_stack((rows, partners)))
+                distances.append(np.repeat(values, repeats))
+            else:
+                if reverse:
+                    found = found[:, ::-1]
+                pairs.append(np.column_stack((donor_rows[found[:, 0]],
+                                              acceptor_rows[found[:, 1]])))
+                distances.append(values)
     if not pairs:
         return np.empty((0, 2), dtype=np.int64), np.empty(0, dtype=np.float64)
     return np.concatenate(pairs), np.concatenate(distances)
@@ -154,6 +190,7 @@ class HydrogenBondStore:
                 raise ValueError("No chemically defined donor-hydrogen pairs in source")
             self.molecules = molecule_ids[mapping]
             self.solvent = is_solvent
+            self.candidate_plan = _candidate_plan(self.donors, self.acceptors, self.solvent)
             self.periodic = periodic
             self.distance_cutoff = float(distance_cutoff)
             self.angle_cutoff = float(angle_cutoff)
@@ -277,7 +314,7 @@ class HydrogenBondStore:
                 continue
             matches, distances = _candidate_pairs(
                 xyz, self.donors, self.acceptors, self.solvent, dims,
-                self.distance_cutoff)
+                self.distance_cutoff, self.candidate_plan)
             if not len(matches):
                 continue
             d_indices = matches[:, 0]
