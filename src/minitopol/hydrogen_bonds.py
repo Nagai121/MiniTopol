@@ -35,14 +35,13 @@ def _candidate_plan(donors, acceptors, solvent):
         if len(donor_rows) and len(acceptor_rows):
             # The first group uses all acceptors in their original order.
             expansion = None
-            if reverse:
-                order = np.argsort(donors[donor_rows], kind="stable")
-                sorted_rows = donor_rows[order]
-                _, starts, counts = np.unique(donors[sorted_rows], return_index=True,
-                                              return_counts=True)
-                if len(starts) != len(donor_rows):
-                    expansion = sorted_rows, starts, counts
-                    donor_rows = sorted_rows[starts]
+            order = np.argsort(donors[donor_rows], kind="stable")
+            sorted_rows = donor_rows[order]
+            _, starts, counts = np.unique(donors[sorted_rows], return_index=True,
+                                          return_counts=True)
+            if len(starts) != len(donor_rows):
+                expansion = sorted_rows, starts, counts
+                donor_rows = sorted_rows[starts]
             groups.append((donor_rows, acceptor_rows, reverse, expansion))
     return donor_solvent, acceptor_solvent, groups
 
@@ -84,12 +83,12 @@ def _candidate_pairs(xyz, donors, acceptors, solvent, dimensions, cutoff, plan=N
                 # the exact native distance back to every original D-H row.
                 # Published events are sorted independently of grid order.
                 original_rows, starts, counts = expansion
-                donor_hits = found[:, 1]
+                donor_hits = found[:, int(reverse)]
                 repeats = counts[donor_hits]
                 ends = np.cumsum(repeats)
                 offsets = np.arange(ends[-1]) - np.repeat(ends - repeats, repeats)
                 rows = original_rows[np.repeat(starts[donor_hits], repeats) + offsets]
-                partners = np.repeat(acceptor_rows[found[:, 0]], repeats)
+                partners = np.repeat(acceptor_rows[found[:, int(not reverse)]], repeats)
                 pairs.append(np.column_stack((rows, partners)))
                 distances.append(np.repeat(values, repeats))
             else:
