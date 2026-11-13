@@ -204,3 +204,24 @@ def test_refuse_overlapping_storage_roots(tmp_path):
             storage.configure(external_root=candidate)
     assert (local / "trajectories/trajectory-one/A.zarr/positions/0").is_file()
     assert not storage.status()["enabled"]
+
+
+def test_never_evict_sole_good_copy_if_external_primary_is_lost(tmp_path):
+    local = tmp_path / "internal"
+    data = _data(local)
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(local)
+    storage.configure(external_root=usb, enabled=True)
+    storage.offload("trajectories/trajectory-one")
+    # The USB archive was subsequently damaged, while the internal copy is sound.
+    external_file = usb / "MiniTopol Storage/trajectories/trajectory-one/A.zarr/positions/0"
+    external_file.write_bytes(b"CORRUPTED")
+    with pytest.raises(IOError, match="external primary checksum"):
+        storage.prune(all_cache=True)
+    assert (data / "A.zarr/positions/0").read_bytes() == b"position data"
+    # If the drive is disconnected, pruning must also fail closed.
+    shutil.rmtree(usb)
+    with pytest.raises(FileNotFoundError):
+        storage.prune(all_cache=True)
+    assert (data / "A.zarr/positions/0").read_bytes() == b"position data"
