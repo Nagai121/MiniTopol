@@ -193,3 +193,14 @@ def test_missing_external_can_disable_tiering(tmp_path):
     assert restarted.configure(enabled=False)["enabled"] is False
     with pytest.raises(FileNotFoundError):
         restarted.configure(enabled=True)
+
+
+def test_refuse_overlapping_storage_roots(tmp_path):
+    local = tmp_path / "MiniTopol Storage"
+    _data(local)
+    storage = TieredStorage(local)
+    for candidate in (local, local.parent, local / "nested"):
+        with pytest.raises(ValueError, match="overlap"):
+            storage.configure(external_root=candidate)
+    assert (local / "trajectories/trajectory-one/A.zarr/positions/0").is_file()
+    assert not storage.status()["enabled"]
