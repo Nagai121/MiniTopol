@@ -11,8 +11,11 @@ from minitopol.descriptors import ramachandran
 from minitopol.descriptors.results import with_result_metadata,_payload_hash
 
 class ReadOnlyWorkspace:
-    def __init__(self,path,locks):self.path=Path(path);self.locks=Path(locks)
-    def trajectory_path(self,tid):return self.path/'trajectories'/tid
+    def __init__(self,path,locks,overrides=None):
+        self.path=Path(path);self.locks=Path(locks);self.overrides=dict(overrides or {})
+    def trajectory_path(self,tid):
+        key='trajectories/'+tid
+        return Path(self.overrides[key]) if key in self.overrides else self.path/'trajectories'/tid
     @contextlib.contextmanager
     def catalog(self):
         con=duckdb.connect(str(self.path/'integrated.duckdb'),read_only=True)
