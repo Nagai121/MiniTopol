@@ -2,7 +2,9 @@
 
 from contextlib import contextmanager
 import json
+import hashlib
 import os
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -121,6 +123,30 @@ class Workspace:
     def lock(self, key):
         return FileLock(str(self.path / "locks" / f"{digest(key)}.lock"))
 
+    def storage_writer_lock(self, relative, key):
+        """A writer-scoped cross-process lock shared with tier offload/pruning.
+
+        No scientific writer may mutate a logical dataset after external
+        promotion. A missing placement DB is an error if a registry marker
+        exists, rather than permission to recreate an empty catalog.
+        """
+        from .storage_tiers import logical_path
+        relative = logical_path(relative)
+        identifier_hash = hashlib.sha256(relative.encode("utf-8")).hexdigest()
+        tier = FileLock(str(self.path / "locks" / "storage-tiers" /
+                            (identifier_hash + ".lock")))
+        original = self.lock(key)
+        return _ManagedWriteLock(self, relative, tier, original)
+
+    @contextmanager
+    def storage_write(self, relative):
+        guard = self.storage_writer_lock(relative, "storage-write-" + relative)
+        guard.acquire()
+        try:
+            yield
+        finally:
+            guard.release()
+
     def trajectory_path(self, trajectory):
         return self.path / "trajectories" / identifier(trajectory)
 
@@ -203,3 +229,50 @@ class Workspace:
             if columns:
                 relation = relation.project(",".join('"' + c.replace('"', '""') + '"' for c in columns))
             return relation.to_arrow_table()
+
+
+class _ManagedWriteLock:
+    """FileLock-compatible exclusive lock with an offloaded-primary check."""
+
+    def __init__(self, workspace, relative, tier_lock, writer_lock):
+        self.workspace, self.relative = workspace, relative
+        self.tier_lock, self.writer_lock = tier_lock, writer_lock
+        self.held = False
+
+    def acquire(self):
+        (self.workspace.path / "locks" / "storage-tiers").mkdir(parents=True, exist_ok=True)
+        self.tier_lock.acquire()
+        try:
+            directory = self.workspace.path
+            marker = directory / ".minitopol-tier-registry"
+            index = directory / "storage_index.sqlite3"
+            if marker.exists() and not index.is_file():
+                raise FileNotFoundError("Storage placement catalog is missing")
+            if index.is_file():
+                with sqlite3.connect(index, timeout=30) as db:
+                    row = db.execute(
+                        "SELECT primary_tier FROM tier_objects WHERE relative=?",
+                        (self.relative,)).fetchone()
+                if row is not None and row[0] == "external":
+                    raise PermissionError(
+                        f"Dataset is externally authoritative; mutation rejected: {self.relative}")
+            self.writer_lock.acquire()
+            self.held = True
+        except BaseException:
+            self.tier_lock.release()
+            raise
+        return self
+
+    def release(self):
+        if self.held:
+            try:
+                self.writer_lock.release()
+            finally:
+                self.held = False
+                self.tier_lock.release()
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, *args):
+        self.release()
