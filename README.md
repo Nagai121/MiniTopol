@@ -29,8 +29,8 @@ GPUを使わない場合は環境変数 `MINITOPOL_SASA_DEVICE=cpu` を指定し
 `--solvent` は実際の入力に含まれる溶媒残基名を指定します。溶媒がない場合も `--solvent` 自体は付け、名前を省略します。
 GROの原子名からの元素推定が適さない場合は、全入力原子分の元素配列をJSONで用意し、`--elements elements.json` で指定します。
 
-初回利用時にプロジェクト内の `BaseTraj_Workspace/` を自動生成します。起動ディレクトリを変えても保存先は変わりません。生成データはGitに含めません。
-ソースディレクトリを持たないwheelインストールでは、ユーザーホームの `MiniTopol/BaseTraj_Workspace/` が既定先です。
+初回利用時にMiniTopol本体とは独立した `MiniTopol Storage/` を自動生成します。ソース実行ではプロジェクトの親ディレクトリ、wheelではユーザーホームに配置します。登録済み保存先が不在なら自動再生成しません。生成データはGitに含めません。
+外部補助への選択的な正本配置、多層バッチの有効化、容量設定と先読みについては [MiniTopol Storage](docs/tiered-storage.md) を参照してください。
 別の保存先を使う場合は `python -m minitopol --workspace /data/MiniTopol init` のように指定できます。
 環境変数 `MINITOPOL_WORKSPACE` でも指定でき、既存Workspace内のデータは更新時に保持します。
 
@@ -85,7 +85,7 @@ CLI、注釈JSON、出力列、中断再開と計算資源については [docs/
 | `definitions/` | 科学的な計算定義 |
 | `tests/` | 実形式の変換・10記述子の数学的検証・中断復旧・競合・結果管理 |
 | `docs/` | データ構造と処理契約 |
-| `BaseTraj_Workspace/` | 利用時に生成するデータ。配布物に含めない |
+| `MiniTopol Storage/` | ソース本体とは独立して利用時に生成するデータ。配布物に含めない |
 
 仕様、再開方法、実装済みの範囲と制約は [docs/schema.md](docs/schema.md) に記載しています。
 このリポジトリには実教師データを含めていません。テストは一時ディレクトリ内でGRO・XTCを生成します。
@@ -97,7 +97,7 @@ ATLASからのメタデータ取得・ZIPダウンロード・簡易TSV台帳、
 
 ## v0.2.0: 元データと静的な系情報
 
-ATLASの元データは `BaseTraj_Workspace/sources/ATLAS/<dataset>-<kind>/`、
+ATLASの元データは `MiniTopol Storage/sources/ATLAS/<dataset>-<kind>/`、
 ダウンロード台帳は `sources/ATLAS/downloads.tsv` に保存します。
 既存Workspaceは旧配置の読み出しが可能です。検証付きの明示的な移行は
 `python -m minitopol migrate-atlas-sources` で実行します。mainの既存データを
