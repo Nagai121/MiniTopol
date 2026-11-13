@@ -23,6 +23,13 @@ class Workspace:
         self.path = Path(requested if requested is not None else self.default_path()).resolve()
         if registered and (not self.path.is_dir() or not (self.path / "integrated.duckdb").is_file()):
             raise FileNotFoundError(f"Registered MiniTopol Storage or its catalog is missing: {self.path}")
+        if requested is None and not registered and not self.path.exists():
+            project = Path(__file__).resolve().parents[2]
+            legacy = project / "BaseTraj_Workspace"
+            if (project / "pyproject.toml").is_file() and (legacy / "integrated.duckdb").is_file():
+                raise RuntimeError(
+                    f"Existing legacy Workspace detected at {legacy}; "
+                    "run 'minitopol migrate-workspace' before creating the new default storage")
         self.path.mkdir(parents=True, exist_ok=True)
         for directory in ("trajectories", "descriptors", "locks"):
             (self.path / directory).mkdir(exist_ok=True)
