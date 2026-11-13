@@ -73,8 +73,12 @@ def test_missing_registered_external_fails_closed(tmp_path):
     (tmp_path / "usb").mkdir()
     storage.configure(external_root=tmp_path / "usb", enabled=True)
     shutil.rmtree(tmp_path / "usb")
+    # Missing external tier must not stop the Provider from serving local data.
+    restarted = TieredStorage(local)
+    assert restarted.status()["external_available"] is False
+    assert (local / "trajectories/trajectory-one/A.zarr/positions/0").is_file()
     with pytest.raises(FileNotFoundError):
-        TieredStorage(local)
+        restarted.offload("trajectories/trajectory-one")
 
 
 def test_storage_migration_retains_old_data(tmp_path):
@@ -150,3 +154,42 @@ def test_default_storage_requires_explicit_legacy_migration(tmp_path, monkeypatc
     monkeypatch.delenv("MINITOPOL_WORKSPACE", raising=False)
     with pytest.raises(RuntimeError, match="migrate-workspace"):
         Workspace()
+
+
+def test_existing_corrupt_internal_cache_is_rejected(tmp_path):
+    local = tmp_path / "internal"
+    data = _data(local)
+    (tmp_path / "usb").mkdir()
+    storage = TieredStorage(local)
+    storage.configure(external_root=tmp_path / "usb", enabled=True)
+    storage.offload("trajectories/trajectory-one")
+    (data / "A.zarr/positions/0").write_bytes(b"CORRUPTED")
+    restarted = TieredStorage(local)
+    with pytest.raises(ValueError, match="Internal cache differs"):
+        restarted.ensure("trajectories/trajectory-one")
+    # Corrupt local data must not be discarded automatically.
+    assert (data / "A.zarr/positions/0").read_bytes() == b"CORRUPTED"
+
+
+def test_ingest_refuses_to_modify_external_primary(tmp_path, trajectory):
+    workspace = Workspace(tmp_path / "internal")
+    tid = convert(workspace, trajectory[0], trajectory[1], solvent_resnames=["SOL"])
+    (tmp_path / "usb").mkdir()
+    storage = TieredStorage(workspace.path)
+    storage.configure(external_root=tmp_path / "usb", enabled=True)
+    storage.offload("trajectories/" + tid)
+    with pytest.raises(ValueError, match="ingest before"):
+        storage.ingest_sources(tid)
+
+
+def test_missing_external_can_disable_tiering(tmp_path):
+    local = tmp_path / "internal"
+    _data(local)
+    (tmp_path / "usb").mkdir()
+    storage = TieredStorage(local)
+    storage.configure(external_root=tmp_path / "usb", enabled=True)
+    shutil.rmtree(tmp_path / "usb")
+    restarted = TieredStorage(local)
+    assert restarted.configure(enabled=False)["enabled"] is False
+    with pytest.raises(FileNotFoundError):
+        restarted.configure(enabled=True)
