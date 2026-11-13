@@ -316,6 +316,13 @@ class TieredStorage:
                     if path.exists() and _tree_digest(path)[0] != record[1]:
                         # Locally modified data must never be discarded as a cache.
                         continue
+                    # The external primary may have disappeared or become
+                    # corrupt since offload. Never delete the last valid copy
+                    # based solely on an old catalog entry.
+                    external = self._safe_path(self._external_root(), relative)
+                    actual, _ = _tree_digest(external)
+                    if actual != record[1]:
+                        raise IOError(f"Cannot evict: external primary checksum differs: {relative}")
                     if path.is_dir():
                         shutil.rmtree(path)
                     elif path.exists():
