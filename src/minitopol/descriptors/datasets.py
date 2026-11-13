@@ -74,7 +74,9 @@ class DatasetWriter:
         self.marker = self.path.with_suffix(".json")
         self.progress = self.directory / "progress"
         self.layout = layout
-        self.lock = self.workspace.lock("result-" + digest([trajectory, definition.identity]))
+        self.lock = self.workspace.storage_writer_lock(
+            f"descriptors/{definition.name}/{trajectory}",
+            "result-" + digest([trajectory, definition.identity]))
         self.complete = False
         self.journal = False
 
