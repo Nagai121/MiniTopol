@@ -60,6 +60,12 @@ class ResultStore:
         self.workspace = workspace
 
     def publish(self, trajectory, definition, start, stop, table):
+        # Check ownership before even resolving the potentially offloaded
+        # source manifest. Hold the same cross-process lock until publication.
+        with self.workspace.storage_write(f"descriptors/{definition.name}/{trajectory}"):
+            return self._publish(trajectory, definition, start, stop, table)
+
+    def _publish(self, trajectory, definition, start, stop, table):
         manifest = Registry(self.workspace).manifest(trajectory)
         representation = Registry(self.workspace).validate_representation(trajectory, definition.representation)
         if definition.representation != "A":
