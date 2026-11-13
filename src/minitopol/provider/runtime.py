@@ -499,7 +499,7 @@ class DataProvider:
         if name == "contacts":
             # Preserve frequency rows (frame IS NULL) in a frame-limited query.
             with self.workspace.catalog() as con:
-                paths = [str(self.workspace.path / r[0]) for r in con.execute(
+                paths = [str(self.workspace.resolve_path(r[0])) for r in con.execute(
                     "SELECT COALESCE(p.path,r.path) FROM results r "
                     "LEFT JOIN result_parts p ON p.result_id=r.id "
                     "WHERE r.trajectory=? AND r.descriptor='contacts' ORDER BY r.id,p.part_index",
