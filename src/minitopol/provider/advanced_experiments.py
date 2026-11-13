@@ -190,9 +190,11 @@ class AdvancedProvider(ScheduledProvider):
             if len(descriptors) < 2:
                 return builder()
 
+            overlays = self.workspace.storage_read_overrides()
             def load(name):
                 started = time.perf_counter_ns()
-                table = self._measured_descriptor(tid, name, frames)
+                with self.workspace.storage_read_scope(overlays):
+                    table = self._measured_descriptor(tid, name, frames)
                 return table, time.perf_counter_ns() - started
 
             with ThreadPoolExecutor(max_workers=self.workers) as pool:
