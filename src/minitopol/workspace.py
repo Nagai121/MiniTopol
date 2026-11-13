@@ -1,6 +1,7 @@
 """Workspace lifecycle and serialized DuckDB catalog access."""
 
 from contextlib import contextmanager
+import json
 import os
 import threading
 from pathlib import Path
@@ -17,7 +18,11 @@ _query_session_local = threading.local()
 class Workspace:
     def __init__(self, path=None):
         requested = path if path is not None else os.environ.get("MINITOPOL_WORKSPACE")
+        record = Path.home() / ".minitopol" / "storage-location.json"
+        registered = requested is None and record.is_file()
         self.path = Path(requested if requested is not None else self.default_path()).resolve()
+        if registered and not self.path.is_dir():
+            raise FileNotFoundError(f"Registered MiniTopol Storage is missing: {self.path}")
         self.path.mkdir(parents=True, exist_ok=True)
         for directory in ("trajectories", "descriptors", "locks"):
             (self.path / directory).mkdir(exist_ok=True)
@@ -48,16 +53,26 @@ class Workspace:
                 trajectory VARCHAR PRIMARY KEY, info VARCHAR NOT NULL)""")
             con.execute("""CREATE TABLE IF NOT EXISTS hydrogen_bond_sets(
                 trajectory VARCHAR PRIMARY KEY, info VARCHAR NOT NULL)""")
+        if requested is None and not registered:
+            record.parent.mkdir(parents=True, exist_ok=True)
+            temporary = record.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"path": str(self.path)}), encoding="utf-8")
+            os.replace(temporary, record)
 
     @staticmethod
     def default_path():
         """Anchor source installs to the project, independently of shell cwd."""
+        record = Path.home() / ".minitopol" / "storage-location.json"
+        if record.is_file():
+            location = json.loads(record.read_text(encoding="utf-8"))
+            if not isinstance(location, dict) or not isinstance(location.get("path"), str):
+                raise ValueError("Invalid registered MiniTopol Storage path")
+            return Path(location["path"])
         project = Path(__file__).resolve().parents[2]
         if (project / "pyproject.toml").is_file() and (project / "src" / "minitopol").is_dir():
-            return project / "BaseTraj_Workspace"
-        # Wheels have no source project directory. Keep their default writable
-        # and stable, while preserving the explicit path/environment overrides.
-        return Path.home() / "MiniTopol" / "BaseTraj_Workspace"
+            return project.parent / "MiniTopol Storage"
+        # The installed wheel also keeps mutable data outside package files.
+        return Path.home() / "MiniTopol Storage"
 
     @contextmanager
     def query_session(self):
