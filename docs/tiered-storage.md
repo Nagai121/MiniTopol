@@ -104,6 +104,8 @@ CLPがバッチの**供給順序**を指定します。Providerはその順序�
 ## 従来のWorkspaceからの移行
 
 旧 `BaseTraj_Workspace` は自動削除も自動移動もしません。
+旧Workspaceのカタログを検出した場合は、新しい空Workspaceを勝手に生成せず
+明示的な移行を求めます。Providerを停止してから実行してください。
 
 ```bash
 minitopol migrate-workspace /path/to/BaseTraj_Workspace \
