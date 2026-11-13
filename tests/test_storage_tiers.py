@@ -30,6 +30,7 @@ def test_offload_verified_cache_eviction_and_reuse(tmp_path):
     path = _data(local)
     manager = TieredStorage(local)
     assert manager.status()["enabled"] is False
+    (tmp_path / "external").mkdir()
     manager.configure(external_root=tmp_path / "external", enabled=True)
     entry = manager.offload("trajectories/trajectory-one")
     assert entry["bytes"] == len(b"position data")
@@ -49,6 +50,7 @@ def test_bad_external_copy_never_published(tmp_path):
     local = tmp_path / "local"
     path = _data(local)
     storage = TieredStorage(local)
+    (tmp_path / "usb").mkdir()
     storage.configure(external_root=tmp_path / "usb", enabled=True)
     storage.offload("trajectories/trajectory-one")
     storage.prune(all_cache=True)
@@ -64,6 +66,7 @@ def test_missing_registered_external_fails_closed(tmp_path):
     local = tmp_path / "internal"
     _data(local)
     storage = TieredStorage(local)
+    (tmp_path / "usb").mkdir()
     storage.configure(external_root=tmp_path / "usb", enabled=True)
     shutil.rmtree(tmp_path / "usb")
     with pytest.raises(FileNotFoundError):
@@ -91,6 +94,7 @@ def test_provider_offloaded_trajectory_and_ordered_plans(tmp_path, trajectory):
     tid = convert(workspace, trajectory[0], trajectory[1],
                   solvent_resnames=["SOL"], chunk_frames=3)
     storage = TieredStorage(workspace.path)
+    (tmp_path / "usb").mkdir()
     storage.configure(external_root=tmp_path / "usb", enabled=True, prefetch_batches=1)
     storage.offload("trajectories/" + tid)
     storage.prune(all_cache=True)
