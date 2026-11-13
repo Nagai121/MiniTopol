@@ -23,6 +23,7 @@ class Workspace:
         record = Path.home() / ".minitopol" / "storage-location.json"
         registered = requested is None and record.is_file()
         self.path = Path(requested if requested is not None else self.default_path()).resolve()
+        self._write_nesting = threading.local()
         if registered and (not self.path.is_dir() or not (self.path / "integrated.duckdb").is_file()):
             raise FileNotFoundError(f"Registered MiniTopol Storage or its catalog is missing: {self.path}")
         if requested is None and not registered and not self.path.exists():
@@ -273,10 +274,17 @@ class _ManagedWriteLock:
         self.workspace, self.relative = workspace, relative
         self.tier_lock, self.writer_lock = tier_lock, writer_lock
         self.held = False
+        self.owns_tier = False
 
     def acquire(self):
         (self.workspace.path / "locks" / "storage-tiers").mkdir(parents=True, exist_ok=True)
-        self.tier_lock.acquire()
+        depths = getattr(self.workspace._write_nesting, "depths", None)
+        if depths is None:
+            depths = {}
+            self.workspace._write_nesting.depths = depths
+        self.owns_tier = depths.get(self.relative, 0) == 0
+        if self.owns_tier:
+            self.tier_lock.acquire()
         try:
             directory = self.workspace.path
             marker = directory / ".minitopol-tier-registry"
@@ -292,9 +300,11 @@ class _ManagedWriteLock:
                     raise PermissionError(
                         f"Dataset is externally authoritative; mutation rejected: {self.relative}")
             self.writer_lock.acquire()
+            depths[self.relative] = depths.get(self.relative, 0) + 1
             self.held = True
         except BaseException:
-            self.tier_lock.release()
+            if self.owns_tier:
+                self.tier_lock.release()
             raise
         return self
 
@@ -304,7 +314,12 @@ class _ManagedWriteLock:
                 self.writer_lock.release()
             finally:
                 self.held = False
-                self.tier_lock.release()
+                depths = self.workspace._write_nesting.depths
+                depths[self.relative] -= 1
+                if not depths[self.relative]:
+                    del depths[self.relative]
+                if self.owns_tier:
+                    self.tier_lock.release()
 
     def __enter__(self):
         return self.acquire()
