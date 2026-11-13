@@ -107,7 +107,7 @@ def publish_conditions(workspace, trajectory, *, tpr=None, mdp=None, supplied=No
                                   not all(math.isfinite(x) for x in
                                           (value if isinstance(value, list) else [value]))):
             raise ValueError("Invalid numeric system condition: " + key)
-    with workspace.lock("system-conditions-" + trajectory):
+    with workspace.storage_write("trajectories/" + trajectory), workspace.lock("system-conditions-" + trajectory):
         if path.exists():
             old = read_json(path)
             if old.get("schema") != 1 or set(old) != set(FIELDS) | {"schema"}:
@@ -191,7 +191,7 @@ def publish_molecules(workspace, trajectory, tpr, source_to_tpr):
             name = info["molecule_type"]
             ions[name] = ions.get(name, 0) + 1
     directory = workspace.trajectory_path(trajectory) / "system"
-    with workspace.lock("system-molecules-" + trajectory):
+    with workspace.storage_write("trajectories/" + trajectory), workspace.lock("system-molecules-" + trajectory):
         directory.mkdir(parents=True, exist_ok=True)
         for path, table in ((directory / "atom_properties.parquet", atoms),
                             (directory / "molecules.parquet", molecules)):
