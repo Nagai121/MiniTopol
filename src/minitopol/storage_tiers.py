@@ -47,7 +47,7 @@ def _tree_digest(path: Path):
     for file in files:
         if file.is_symlink():
             raise ValueError(f"Symlinks are not supported in managed datasets: {file}")
-        relative = file.relative_to(path).as_posix() if path.is_dir() else path.name
+        relative = file.relative_to(path).as_posix() if path.is_dir() else ""
         hasher.update(relative.encode("utf-8") + b"\0")
         size = file.stat().st_size
         total += size
@@ -114,7 +114,8 @@ class TieredStorage:
                 sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
                 last_used REAL NOT NULL)""")
             for name, value in (("enabled", False), ("cache_percent", 10.0),
-                                ("write_policy", "longevity"), ("external_root", None),
+                                ("write_policy", "longevity"), ("prefetch_batches", 1),
+                                ("external_root", None),
                                 ("external_identity", None)):
                 db.execute("INSERT OR IGNORE INTO tier_settings VALUES (?, ?)",
                            (name, json.dumps(value)))
@@ -154,7 +155,7 @@ class TieredStorage:
         return root
 
     def configure(self, *, enabled=None, external_root=None, cache_percent=None,
-                  write_policy=None):
+                  write_policy=None, prefetch_batches=None):
         with self._mutex:
             current = self.settings()
             changes = {}
@@ -197,6 +198,10 @@ class TieredStorage:
                 if write_policy not in ("longevity", "balanced", "throughput"):
                     raise ValueError("Invalid write_policy")
                 changes["write_policy"] = write_policy
+            if prefetch_batches is not None:
+                if type(prefetch_batches) is not int or not 1 <= prefetch_batches <= 64:
+                    raise ValueError("prefetch_batches must be between 1 and 64")
+                changes["prefetch_batches"] = prefetch_batches
             merged = {**current, **changes}
             if merged["enabled"] and merged["external_root"] is None:
                 raise ValueError("Configure external storage before enabling multi-tier batches")
@@ -302,7 +307,7 @@ class TieredStorage:
         return {"relative": relative, "sha256": digest, "bytes": size,
                 "external_copy_created": copied}
 
-    def _ensure_locked(self, relative):
+    def _ensure_locked(self, relative, exempt=()):
         record = self._object(relative)
         internal = self._safe_path(self.root, relative)
         if not record or record[0] != "external":
@@ -316,7 +321,7 @@ class TieredStorage:
         size = record[2]
         if size > self._cap():
             raise OSError(f"Dataset {relative} exceeds the configured temporary cache limit")
-        self._prune(required=size, exempt=(relative,))
+        self._prune(required=size, exempt=tuple(exempt) + (relative,))
         _copy_verified(external, internal, expected=record[1])
         with self._db() as db:
             db.execute("UPDATE tier_objects SET last_used=? WHERE relative=?",
@@ -359,7 +364,7 @@ class TieredStorage:
                 stack.enter_context(self._lock(name))
             for name in paths:
                 if self._object(name) is not None:
-                    self._ensure_locked(name)
+                    self._ensure_locked(name, exempt=paths)
             yield
 
     def prefetch(self, request, workspace):
