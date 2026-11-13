@@ -1,5 +1,6 @@
 """Tier-aware production Provider and bounded learning-batch lookahead."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+import time
 from threading import RLock
 from uuid import uuid4
 
@@ -110,6 +111,21 @@ class TieredProvider(OptimizedProvider):
                 if task.cancel():
                     plan["states"][index] = "cancelled"
             return {"cancelled": True, "plan_id": plan_id}
+
+    def _submit(self, tid, name, frames, revision):
+        # The legacy next-frame scheduler can outlive a request and its
+        # external-read lock. Run its work synchronously for direct primary
+        # reads; CLP's tier prefetch remains managed by its separate pool.
+        if self.workspace.storage_read_overrides():
+            task = Future()
+            try:
+                start = time.perf_counter_ns()
+                table = self._measured_descriptor(tid, name, frames)
+                task.set_result((table, time.perf_counter_ns() - start, revision))
+            except BaseException as exc:
+                task.set_exception(exc)
+            return task
+        return super()._submit(tid, name, frames, revision)
 
     def get(self, request):
         if not isinstance(request, dict):
