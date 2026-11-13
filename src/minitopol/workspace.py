@@ -21,8 +21,8 @@ class Workspace:
         record = Path.home() / ".minitopol" / "storage-location.json"
         registered = requested is None and record.is_file()
         self.path = Path(requested if requested is not None else self.default_path()).resolve()
-        if registered and not self.path.is_dir():
-            raise FileNotFoundError(f"Registered MiniTopol Storage is missing: {self.path}")
+        if registered and (not self.path.is_dir() or not (self.path / "integrated.duckdb").is_file()):
+            raise FileNotFoundError(f"Registered MiniTopol Storage or its catalog is missing: {self.path}")
         self.path.mkdir(parents=True, exist_ok=True)
         for directory in ("trajectories", "descriptors", "locks"):
             (self.path / directory).mkdir(exist_ok=True)
