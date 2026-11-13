@@ -357,3 +357,22 @@ def test_oversize_ramachandran_recipe_and_trajectory(tmp_path, trajectory):
         assert not ws.trajectory_path(tid).exists()
     finally:
         provider.close()
+
+
+def test_virtual_rama_scientific_source_checks_allow_only_known_routing_revisions():
+    from minitopol.descriptors.virtual_rama_store import (
+        _verify_rama_sources, source_hashes,
+    )
+    current = source_hashes()
+    previous = dict(current)
+    previous['virtual_rama.py'] = (
+        'abebdc2697f86ecd6eed710224dbcc9882bacf68811d082c0ebdf560bb1d75b7'
+    )
+    previous['descriptors/virtual_rama_store.py'] = (
+        '8adc49cf7ed35060a6cc42f4c4e173f43ad093be9c332a1327c026712d21bfd0'
+    )
+    _verify_rama_sources(current)
+    _verify_rama_sources(previous)
+    previous['registry.py'] = '0' * 64
+    with pytest.raises(IOError, match="source changed"):
+        _verify_rama_sources(previous)
