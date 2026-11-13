@@ -225,3 +225,135 @@ def test_never_evict_sole_good_copy_if_external_primary_is_lost(tmp_path):
     with pytest.raises(FileNotFoundError):
         storage.prune(all_cache=True)
     assert (data / "A.zarr/positions/0").read_bytes() == b"position data"
+
+
+def test_oversize_trajectory_uses_external_read_scope_without_ssd_staging(tmp_path, trajectory):
+    from minitopol.provider.tiered import TieredProvider
+
+    workspace = Workspace(tmp_path / "internal")
+    tid = convert(workspace, trajectory[0], trajectory[1],
+                  solvent_resnames=["SOL"], chunk_frames=3)
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(workspace.path)
+    storage.configure(external_root=usb, enabled=True)
+    storage.offload("trajectories/" + tid)
+    storage.prune(all_cache=True)
+    # Force an internal budget smaller than a single logical trajectory.
+    storage.configure(cache_percent=1e-9)
+    assert storage.status()["temporary_cache_limit_bytes"] < storage._object(
+        "trajectories/" + tid)[2]
+    assert storage.ensure("trajectories/" + tid)["direct_read"] is True
+    assert not workspace.trajectory_path(tid).exists()
+    provider = TieredProvider(workspace.path, 16 * 1024**2)
+    try:
+        request = dict(trajectory=tid, coordinates=True, descriptors=[], frames=[8, 0, 4])
+        result = provider.get(request)
+        assert result["frames"] == [8, 0, 4]
+        assert result["buffers"]
+        provider.cache.release(result["lease"])
+        assert not workspace.trajectory_path(tid).exists()
+        assert storage.status().get("internal_copy_operations", 0) == 0
+    finally:
+        provider.close()
+
+
+def test_oversize_descriptor_and_raw_trajectory_guard(tmp_path, trajectory):
+    import pyarrow as pa
+    from minitopol.descriptors import DescriptorDefinition, ResultStore
+    from minitopol.provider.tiered import TieredProvider
+
+    ws = Workspace(tmp_path / "internal")
+    tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"])
+    definition = DescriptorDefinition("sample", "1", "A", "test", "unit")
+    ResultStore(ws).publish(tid, definition, 0, 9,
+                            pa.table({"frame": [0, 2, 4, 8], "value": [1., 2., 3., 4.]}))
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(ws.path)
+    storage.configure(external_root=usb, enabled=True)
+    storage.offload("trajectories/" + tid)
+    storage.offload("descriptors/sample/" + tid)
+    storage.prune(all_cache=True)
+    storage.configure(cache_percent=1e-9)
+    with pytest.raises(PermissionError, match="externally authoritative"):
+        with ws.storage_write("trajectories/" + tid):
+            pass
+    with pytest.raises(PermissionError, match="externally authoritative"):
+        convert(ws, trajectory[0], trajectory[1],
+                solvent_resnames=["SOL"], trajectory_id=tid)
+    with pytest.raises(PermissionError, match="externally authoritative"):
+        ResultStore(ws).publish(tid, definition, 0, 9,
+                                pa.table({"frame": [0], "value": [1.]}))
+    provider = TieredProvider(ws.path, 16 * 1024**2)
+    try:
+        request = {"trajectory": tid, "coordinates": True,
+                   "descriptors": ["sample"], "frames": [8, 0, 4]}
+        result = provider.get(request)
+        assert "sample" in result["descriptors"]
+        assert result["buffers"]
+        provider.cache.release(result["lease"])
+        assert not (ws.path / "trajectories" / tid).exists()
+        assert not (ws.path / "descriptors/sample" / tid).exists()
+    finally:
+        provider.close()
+
+
+def test_nested_scientific_write_guard_and_offload_exclusion(tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    ws = Workspace(tmp_path / "internal")
+    _data(ws.path)
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(ws.path)
+    storage.configure(external_root=usb, enabled=True)
+    began, release = threading.Event(), threading.Event()
+
+    def mutate():
+        with ws.storage_write("trajectories/trajectory-one"):
+            with ws.storage_writer_lock("trajectories/trajectory-one", "nested-writer"):
+                began.set()
+                assert release.wait(timeout=30)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writing = pool.submit(mutate)
+        assert began.wait(timeout=30)
+        publishing = pool.submit(storage.offload, "trajectories/trajectory-one")
+        assert not publishing.done()
+        release.set()
+        writing.result(timeout=30)
+        result = publishing.result(timeout=30)
+    assert result["relative"] == "trajectories/trajectory-one"
+    with pytest.raises(PermissionError, match="externally authoritative"):
+        with ws.storage_write("trajectories/trajectory-one"):
+            pass
+
+
+def test_oversize_ramachandran_recipe_and_trajectory(tmp_path, trajectory):
+    from minitopol.descriptors import analyze
+    from minitopol.provider.tiered import TieredProvider
+
+    ws = Workspace(tmp_path / "internal")
+    tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"])
+    report = analyze(ws, tid, descriptors=["ramachandran"], coordinate_mode="nonperiodic")
+    assert report["status"] == "complete"
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(ws.path)
+    storage.configure(external_root=usb, enabled=True)
+    storage.offload("trajectories/" + tid)
+    storage.offload("descriptors/ramachandran/" + tid)
+    storage.prune(all_cache=True)
+    storage.configure(cache_percent=1e-9)
+    provider = TieredProvider(ws.path, 16 * 1024**2)
+    try:
+        result = provider.get(
+            {"trajectory": tid, "coordinates": True, "descriptors": ["ramachandran"],
+             "frames": [0, 8]})
+        assert result["buffers"]
+        provider.cache.release(result["lease"])
+        assert not ws.trajectory_path(tid).exists()
+    finally:
+        provider.close()
