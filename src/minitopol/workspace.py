@@ -6,7 +6,7 @@ import hashlib
 import os
 import sqlite3
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import duckdb
 from filelock import FileLock
@@ -147,8 +147,43 @@ class Workspace:
         finally:
             guard.release()
 
+    @contextmanager
+    def storage_read_scope(self, overrides):
+        """Per-thread, read-only locations for oversized external primaries."""
+        contexts = getattr(_query_session_local, "storage_overrides", None)
+        if contexts is None:
+            contexts = {}
+            _query_session_local.storage_overrides = contexts
+        key = str(self.path)
+        previous = contexts.get(key)
+        contexts[key] = dict(overrides)
+        try:
+            yield self
+        finally:
+            if previous is None:
+                contexts.pop(key, None)
+            else:
+                contexts[key] = previous
+
+    def storage_read_overrides(self):
+        return dict(getattr(_query_session_local, "storage_overrides", {}).get(
+            str(self.path), {}))
+
+    def resolve_path(self, relative):
+        """Resolve a published relative data path without relocating its DB."""
+        path = PurePosixPath(str(relative))
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("Data path must be relative to Workspace")
+        for object_name, external in sorted(
+                self.storage_read_overrides().items(), key=lambda pair: len(pair[0]), reverse=True):
+            root = PurePosixPath(object_name)
+            if path == root or root in path.parents:
+                subpath = path.relative_to(root)
+                return Path(external) / subpath
+        return self.path / str(path)
+
     def trajectory_path(self, trajectory):
-        return self.path / "trajectories" / identifier(trajectory)
+        return self.resolve_path("trajectories/" + identifier(trajectory))
 
     def list_trajectories(self):
         with self.catalog() as con:
@@ -212,7 +247,7 @@ class Workspace:
                     raise LookupError("Unknown descriptor definition")
                 clauses.append("r.definition = ?")
                 args.append(row[0])
-            paths = [str(self.path / row[0]) for row in con.execute(
+            paths = [str(self.resolve_path(row[0])) for row in con.execute(
                 "SELECT COALESCE(p.path,r.path) FROM results r LEFT JOIN result_parts p ON p.result_id=r.id" +
                 (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY r.id,p.part_index", args
             ).fetchall()]
