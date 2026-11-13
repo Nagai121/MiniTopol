@@ -73,7 +73,7 @@ class QueryProvider(experiments.ExperimentalProvider):
         return stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino
 
     def _rama_tables(self, result_id, relative):
-        path = self.workspace.path / relative
+        path = self.workspace.resolve_path(relative)
         marker = path.with_suffix('.json')
         # Results are immutable after publication. Include the completion marker
         # and manifest identity so a new publication cannot reuse an old table.
@@ -110,7 +110,7 @@ class QueryProvider(experiments.ExperimentalProvider):
         return self._cached_part(key, load)
 
     def _sasa_tables(self, result_id, relative, frames):
-        path = self.workspace.path / relative
+        path = self.workspace.resolve_path(relative)
         marker = path.with_suffix('.json')
         detail = getattr(self, '_detail', None) if 'detail' in self.features else None
         completed = read_json(marker)
@@ -171,7 +171,7 @@ class QueryProvider(experiments.ExperimentalProvider):
                 raise LookupError('No completed descriptor')
             if name == 'ramachandran' and any(
                     not marker.is_file() or read_json(marker).get('schema') != 5
-                    for marker in ((self.workspace.path / relative).with_suffix('.json') for _, relative in paths)):
+                    for marker in ((self.workspace.resolve_path(relative)).with_suffix('.json') for _, relative in paths)):
                 return BaseProvider._descriptor(self, trajectory, name, frames)
             selected = pa.array(frames, type=pa.int64())
             tables = []
