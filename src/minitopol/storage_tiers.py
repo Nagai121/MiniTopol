@@ -120,6 +120,8 @@ class TieredStorage:
                 relative TEXT PRIMARY KEY, primary_tier TEXT NOT NULL,
                 sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
                 last_used REAL NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS tier_metrics (
+                name TEXT PRIMARY KEY, value INTEGER NOT NULL)""")
             for name, value in (("enabled", False), ("cache_percent", 10.0),
                                 ("write_policy", "longevity"), ("prefetch_batches", 1),
                                 ("external_root", None),
@@ -265,7 +267,8 @@ class TieredStorage:
         rows = self._cache_rows()
         with self._db() as db:
             objects = db.execute("SELECT COUNT(*) FROM tier_objects").fetchone()[0]
-        return {**config, "available_at_start_bytes": self.available_at_start,
+            metrics = dict(db.execute("SELECT name, value FROM tier_metrics"))
+        return {**config, **metrics, "available_at_start_bytes": self.available_at_start,
                 "temporary_cache_limit_bytes": self._cap(),
                 "temporary_cache_bytes": sum(size for _, size, _ in rows),
                 "managed_external_objects": objects}
@@ -308,6 +311,12 @@ class TieredStorage:
             removed = self._prune(all_cache=all_cache)
             return {"removed": removed, **self.status()}
 
+    @staticmethod
+    def _add_metric(db, name, amount):
+        db.execute("INSERT INTO tier_metrics VALUES (?, ?) "
+                   "ON CONFLICT(name) DO UPDATE SET value = value + excluded.value",
+                   (name, amount))
+
     def offload(self, relative):
         relative = logical_path(relative)
         config = self.settings()
@@ -321,6 +330,9 @@ class TieredStorage:
             with self._db() as db:
                 db.execute("INSERT OR REPLACE INTO tier_objects VALUES (?, 'external', ?, ?, ?)",
                            (relative, digest, size, time.time()))
+                if copied:
+                    self._add_metric(db, "external_copy_operations", 1)
+                    self._add_metric(db, "external_written_bytes", size)
         # An offload never deletes its source before publishing a verified primary.
         if config["enabled"]:
             self._prune()
@@ -355,7 +367,12 @@ class TieredStorage:
             raise OSError(f"Dataset {relative} exceeds the configured temporary cache limit")
         self._prune(required=size, exempt=tuple(exempt) + (relative,))
         _copy_verified(external, internal, expected=record[1])
-        self._touch(relative)
+        with self._db() as db:
+            db.execute("UPDATE tier_objects SET last_used=? WHERE relative=?",
+                       (time.time(), relative))
+            self._add_metric(db, "internal_copy_operations", 1)
+            self._add_metric(db, "internal_written_bytes", size)
+        self._touch_times[relative] = time.monotonic()
         return True
 
     def ensure(self, relative):
