@@ -94,7 +94,9 @@ class ResultStore:
         path = self.workspace.path / relative
         # Stage data and completion sidecar before catalog insertion. The
         # sidecar permits recovery if the process stops before DB registration.
-        with self.workspace.lock("result-" + digest([trajectory, definition.identity])):
+        with self.workspace.storage_write(
+                f"descriptors/{definition.name}/{trajectory}"), self.workspace.lock(
+                    "result-" + digest([trajectory, definition.identity])):
             sidecar = path.with_suffix(".json")
             if sidecar.exists():
                 completed = read_json(sidecar)
