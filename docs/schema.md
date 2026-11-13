@@ -2,8 +2,8 @@
 
 ## Workspace
 
-ソース実行・editableインストールのデフォルトはプロジェクト内の `BaseTraj_Workspace/` です。起動ディレクトリに依存しません。
-ソースを持たないwheelインストールではユーザーホームの `MiniTopol/BaseTraj_Workspace/` を使用します。
+ソース実行・editableインストールのデフォルトはプロジェクトと同じ親の `MiniTopol Storage/` です。起動ディレクトリに依存しません。
+ソースを持たないwheelインストールではユーザーホームの `MiniTopol Storage/` を使用します。登録済みパスは `~/.minitopol/storage-location.json` に保存し、失われた場合は自動再生成しません。
 Python APIの引数、CLIの `--workspace`、環境変数 `MINITOPOL_WORKSPACE` の順で指定を優先します。
 ディレクトリとDBは初回利用時に作成し、既存データを初期化し直しません。
 
@@ -20,6 +20,8 @@ Python APIの引数、CLIの `--workspace`、環境変数 `MINITOPOL_WORKSPACE` 
 | `descriptors/<name>/<trajectory>/A/<result-id>/part-*.parquet` | 10記述子の分割出力。全パート完成後に正式登録 |
 | `analyses/<id>.json` | 記述子ごとの実行結果、失敗理由、定義ID・結果ID・行数・未定義値数 |
 | `work/<job-key>/` | 中断再開用の位置合わせ座標・集計・FFT中間量。原データは変更しない |
+| `storage_index.sqlite3` | 外部補助へ退避したデータの正本所在・ハッシュ・容量・参照履歴 |
+| `staging/` | 多層ストレージ転送の予約領域 |
 | `integrated.duckdb` | 完了した軌跡、Cの変換規則、結果の定義・範囲・相対パス、独立した結合表現の管理情報。結果数値は複製しない |
 | `locks/` | プロセス間ロック。残存ファイル自体はロック保持を意味しない |
 
