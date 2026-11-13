@@ -35,6 +35,8 @@ def main(argv=None):
     ingest.add_argument("trajectory", help="Adopt original topology and XTC into sources/manual")
     offload = storage_commands.add_parser("offload")
     offload.add_argument("relative", help="Managed trajectories/ID, descriptors/NAME/ID, or sources/GROUP/ID")
+    ensure = storage_commands.add_parser("ensure")
+    ensure.add_argument("relative", help="Restore an externally stored dataset to the internal cache")
     prune = storage_commands.add_parser("prune")
     prune.add_argument("--all", action="store_true")
     run = sub.add_parser("run")
@@ -137,6 +139,8 @@ def main(argv=None):
             result = manager.offload(args.relative)
         elif args.storage_action == "ingest":
             result = manager.ingest_sources(args.trajectory)
+        elif args.storage_action == "ensure":
+            result = manager.ensure(args.relative)
         else:
             result = manager.prune(all_cache=args.all)
         print(json.dumps(result, ensure_ascii=False, indent=2))
