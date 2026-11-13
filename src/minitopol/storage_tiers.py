@@ -392,9 +392,15 @@ class TieredStorage:
             # a source file while Zarr/DuckDB is reading it.
             for name in paths:
                 stack.enter_context(self._lock(name))
-            for name in paths:
-                if self._object(name) is not None:
-                    self._ensure_locked(name, exempt=paths)
+            if paths:
+                placeholders = ",".join("?" for _ in paths)
+                with self._db() as db:
+                    managed = {row[0] for row in db.execute(
+                        "SELECT relative FROM tier_objects WHERE primary_tier='external' "
+                        f"AND relative IN ({placeholders})", paths)}
+                for name in paths:
+                    if name in managed:
+                        self._ensure_locked(name, exempt=paths)
             yield
 
     def prefetch(self, request, workspace):
