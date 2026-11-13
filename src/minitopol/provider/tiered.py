@@ -32,6 +32,11 @@ class TieredProvider(OptimizedProvider):
             raise ValueError("Expected a logical relative path")
         return self.tiers.offload(request["relative"])
 
+    def ensure_storage(self, request):
+        if not isinstance(request, dict) or set(request) != {"relative"}:
+            raise ValueError("Expected a logical relative path")
+        return self.tiers.ensure(request["relative"])
+
     def ingest_storage(self, request):
         if not isinstance(request, dict) or set(request) != {"trajectory"}:
             raise ValueError("Expected a trajectory ID")
