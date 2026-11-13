@@ -58,7 +58,7 @@ def convert(workspace, gro, xtc, *, solvent_resnames, trajectory_id=None,
         identity = digest(options)
         trajectory_id = trajectory_id or identity[:32]
         path = workspace.trajectory_path(trajectory_id)
-        with workspace.lock("trajectory-" + trajectory_id):
+        with workspace.storage_write("trajectories/" + trajectory_id), workspace.lock("trajectory-" + trajectory_id):
             path.mkdir(exist_ok=True)
             manifest_path = path / "manifest.json"
             frames, atoms = len(universe.trajectory), len(selected)
