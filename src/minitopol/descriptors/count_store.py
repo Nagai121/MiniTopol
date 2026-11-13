@@ -46,7 +46,7 @@ def verify_dataset(path,completed):
     if rows!=completed['rows']:raise IOError('SASA completed row count mismatch')
 
 def logical_tables(workspace,relative,*,batch_size=65536,start=None,stop=None):
-    path=workspace.path/relative;completed=read_json(path.with_suffix('.json'))
+    path=workspace.resolve_path(relative);completed=read_json(path.with_suffix('.json'))
     if completed.get('schema') not in (4,6):
         for part in completed['parts']:
             for batch in pq.ParquetFile(path.parent/part['file']).iter_batches(batch_size=batch_size):yield pa.Table.from_batches([batch])
@@ -81,7 +81,7 @@ def logical_tables(workspace,relative,*,batch_size=65536,start=None,stop=None):
 def read_rows(workspace,relative,limit):
     if limit<=0:return []
     import re
-    path=workspace.path/relative;completed=read_json(path.with_suffix('.json'))
+    path=workspace.resolve_path(relative);completed=read_json(path.with_suffix('.json'))
     first=None;last=None
     if completed.get('schema') in (4,6):
         match=re.fullmatch(r'frames-(\d+)-(\d+)',completed['parts'][0]['key'])
