@@ -1,6 +1,7 @@
 """Storage tiering: checksums, safe eviction, migration and Provider batches."""
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -132,3 +133,20 @@ def test_adopt_raw_source_files(tmp_path, trajectory):
     manifest = json.loads((workspace.trajectory_path(tid) / "manifest.json").read_text())
     assert (workspace.path / "sources/manual" / tid).is_dir()
     assert all("sources" in manifest[k] for k in ("gro_path", "xtc_path"))
+
+
+def test_default_storage_requires_explicit_legacy_migration(tmp_path, monkeypatch):
+    import minitopol.workspace as module
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    project = tmp_path / "MiniTopol"
+    package = project / "src" / "minitopol"
+    package.mkdir(parents=True)
+    (project / "pyproject.toml").touch()
+    Workspace(project / "BaseTraj_Workspace")
+    monkeypatch.setattr(module, "__file__", str(package / "workspace.py"))
+    monkeypatch.delenv("MINITOPOL_WORKSPACE", raising=False)
+    with pytest.raises(RuntimeError, match="migrate-workspace"):
+        Workspace()
