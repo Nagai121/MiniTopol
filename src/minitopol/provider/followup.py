@@ -87,7 +87,7 @@ class FollowupProvider(previous.AdvancedProvider):
     def _indexed_contacts(self, trajectory, frames):
         started = time.perf_counter_ns()
         with self.workspace.catalog() as con:
-            paths = [self.workspace.path / row[0] for row in con.execute(
+            paths = [self.workspace.resolve_path(row[0]) for row in con.execute(
                 "SELECT COALESCE(p.path,r.path) FROM results r LEFT JOIN result_parts p ON p.result_id=r.id "
                 "WHERE r.trajectory=? AND r.descriptor='contacts' ORDER BY r.id,p.part_index",
                 [trajectory]).fetchall()]
@@ -139,7 +139,7 @@ class FollowupProvider(previous.AdvancedProvider):
     def _baseline_contacts(self, trajectory, frames):
         started = time.perf_counter_ns()
         with self.workspace.catalog() as con:
-            paths = [str(self.workspace.path / row[0]) for row in con.execute(
+            paths = [str(self.workspace.resolve_path(row[0])) for row in con.execute(
                 "SELECT COALESCE(p.path,r.path) FROM results r LEFT JOIN result_parts p ON p.result_id=r.id "
                 "WHERE r.trajectory=? AND r.descriptor='contacts' ORDER BY r.id,p.part_index",
                 [trajectory]).fetchall()]
