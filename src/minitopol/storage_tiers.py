@@ -179,6 +179,9 @@ class TieredStorage:
             changes = {}
             if external_root is not None:
                 root = Path(external_root).expanduser().resolve()
+                if root == self.root or root in self.root.parents or self.root in root.parents:
+                    raise ValueError(
+                        "External storage must not overlap the internal MiniTopol Storage")
                 if root.name != EXTERNAL_NAME:
                     if not root.is_dir():
                         raise FileNotFoundError(f"External drive root is not mounted: {root}")
