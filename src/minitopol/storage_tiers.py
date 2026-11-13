@@ -110,6 +110,9 @@ class TieredStorage:
         if self.registry_marker.exists() and not self.database.is_file():
             raise FileNotFoundError("Storage placement catalog is missing; refusing a new empty catalog")
         self._mutex = threading.RLock()
+        # Protect the registration transition across processes and CLI/Provider.
+        # An offload must never publish on a drive that configure() just changed.
+        self._state_lock = FileLock(str(self.lock_root / "storage-configuration.lock"))
         self._touch_times = {}
         # Cache verification is scoped to this process. Never trust an existing
         # internal copy on a new Provider startup without checking its digest.
@@ -171,7 +174,7 @@ class TieredStorage:
 
     def configure(self, *, enabled=None, external_root=None, cache_percent=None,
                   write_policy=None, prefetch_batches=None):
-        with self._mutex:
+        with self._state_lock, self._mutex:
             current = self.settings()
             changes = {}
             if external_root is not None:
@@ -338,7 +341,7 @@ class TieredStorage:
         relative = logical_path(relative)
         config = self.settings()
         external = self._external_root(config)
-        with self._lock(relative):
+        with self._state_lock, self._lock(relative):
             internal_path = self._safe_path(self.root, relative)
             external_path = self._safe_path(external, relative)
             if not internal_path.exists():
