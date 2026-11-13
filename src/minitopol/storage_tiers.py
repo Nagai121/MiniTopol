@@ -111,6 +111,9 @@ class TieredStorage:
             raise FileNotFoundError("Storage placement catalog is missing; refusing a new empty catalog")
         self._mutex = threading.RLock()
         self._touch_times = {}
+        # Cache verification is scoped to this process. Never trust an existing
+        # internal copy on a new Provider startup without checking its digest.
+        self._validated_internal = {}
         # Only a Provider restart takes a fresh free-space snapshot.
         self.available_at_start = shutil.disk_usage(self.root).free
         with self._db() as db:
@@ -130,9 +133,8 @@ class TieredStorage:
                            (name, json.dumps(value)))
         if not self.registry_marker.exists():
             self.registry_marker.write_text("schema=1\\n", encoding="utf-8")
-        config = self.settings()
-        if config["external_root"] is not None:
-            self._external_root(config)  # Never recreate a missing registered disk.
+        # An unplugged external archive must not prevent internal-only reads.
+        # Explicit operations touching the external tier still fail closed.
 
     @contextmanager
     def _db(self):
@@ -224,7 +226,8 @@ class TieredStorage:
             merged = {**current, **changes}
             if merged["enabled"] and merged["external_root"] is None:
                 raise ValueError("Configure external storage before enabling multi-tier batches")
-            if merged["external_root"] is not None:
+            if merged["external_root"] is not None and (
+                    external_root is not None or enabled is True):
                 self._external_root(merged)
             with self._db() as db:
                 for key, value in changes.items():
@@ -268,7 +271,15 @@ class TieredStorage:
         with self._db() as db:
             objects = db.execute("SELECT COUNT(*) FROM tier_objects").fetchone()[0]
             metrics = dict(db.execute("SELECT name, value FROM tier_metrics"))
-        return {**config, **metrics, "available_at_start_bytes": self.available_at_start,
+        external_available = False
+        if config["external_root"] is not None:
+            try:
+                self._external_root(config)
+                external_available = True
+            except (FileNotFoundError, RuntimeError):
+                pass
+        return {**config, **metrics, "external_available": external_available,
+                "available_at_start_bytes": self.available_at_start,
                 "temporary_cache_limit_bytes": self._cap(),
                 "temporary_cache_bytes": sum(size for _, size, _ in rows),
                 "managed_external_objects": objects}
@@ -298,6 +309,7 @@ class TieredStorage:
                         shutil.rmtree(path)
                     elif path.exists():
                         path.unlink()
+                    self._validated_internal.pop(relative, None)
                     used -= size
                     removed.append(relative)
             except Timeout:
@@ -327,6 +339,7 @@ class TieredStorage:
             if not internal_path.exists():
                 raise FileNotFoundError(f"Cannot offload missing internal data: {relative}")
             digest, size, copied = _copy_verified(internal_path, external_path)
+            self._validated_internal[relative] = digest
             with self._db() as db:
                 db.execute("INSERT OR REPLACE INTO tier_objects VALUES (?, 'external', ?, ?, ?)",
                            (relative, digest, size, time.time()))
@@ -358,7 +371,14 @@ class TieredStorage:
                 raise FileNotFoundError(f"Dataset unavailable: {relative}")
             return False
         if internal.exists():
-            # Reuse already verified local copies without redundant SSD writes.
+            # A file's existence is not proof of validity. Verify once per
+            # Provider lifetime; repeated batch requests do not hash it again.
+            if self._validated_internal.get(relative) != record[1]:
+                actual, _ = _tree_digest(internal)
+                if actual != record[1]:
+                    raise ValueError(
+                        f"Internal cache differs from its verified primary: {relative}")
+                self._validated_internal[relative] = actual
             self._touch(relative)
             return False
         external = self._safe_path(self._external_root(), relative)
@@ -373,6 +393,7 @@ class TieredStorage:
             self._add_metric(db, "internal_copy_operations", 1)
             self._add_metric(db, "internal_written_bytes", size)
         self._touch_times[relative] = time.monotonic()
+        self._validated_internal[relative] = record[1]
         return True
 
     def ensure(self, relative):
@@ -423,8 +444,10 @@ class TieredStorage:
     def prefetch(self, request, workspace):
         if not self.settings()["enabled"]:
             raise ValueError("Multi-tier batches are disabled")
-        targets = self.request_paths(request, workspace)
-        return [self.ensure(name) for name in targets if self._object(name) is not None]
+        # Pin the full logical request while staging. Otherwise staging the
+        # second descriptor could evict the first within the same batch.
+        with self.hold_request(request, workspace):
+            return {"prepared": self.request_paths(request, workspace)}
 
 
     def ingest_sources(self, trajectory):
@@ -438,8 +461,11 @@ class TieredStorage:
 
         identifier(trajectory)
         relative = f"trajectories/{trajectory}"
-        self.ensure(relative)
         with self._lock(relative):
+            if self._object(relative) is not None:
+                raise ValueError(
+                    "Raw source ingestion changes the manifest; ingest before "
+                    "offloading this trajectory, not while its primary is external")
             manifest_path = self.root / relative / "manifest.json"
             manifest = read_json(manifest_path)
             source_identity = manifest.get("options", {}).get("source", {})
