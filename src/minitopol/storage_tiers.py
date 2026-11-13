@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import sqlite3
 import threading
@@ -32,7 +33,9 @@ def logical_path(value: str) -> str:
     if (path.is_absolute() or any(p in ("", ".", "..") for p in value.split("/"))
             or not (len(parts) == 2 and parts[0] == "trajectories"
                     or len(parts) == 3 and parts[0] == "descriptors"
-                    or len(parts) >= 3 and parts[0] == "sources")):
+                    or len(parts) >= 3 and parts[0] == "sources")
+            or any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", part) is None
+                   for part in parts[1:])):
         raise ValueError("Expected trajectories/ID, descriptors/NAME/ID, or sources/GROUP/ID")
     return path.as_posix()
 
