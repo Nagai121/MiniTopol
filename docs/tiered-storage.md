@@ -44,6 +44,8 @@ minitopol storage configure --cache-percent 10 --write-policy longevity --prefet
 維持し、Provider再起動で容量を再評価します。
 
 書き込み抑制を重視し、既存の検証済みコピーを再利用して不要な再転送を避けます。
+`storage status` では内部補助への累計転送回数・書き込み量
+(`internal_copy_operations`、`internal_written_bytes`) も取得できます。
 `--write-policy` の初期値は `longevity`（先行バッチ数1）。
 `balanced` は2、`throughput` は4を既定の先行バッチ数とし、
 `--prefetch-batches` で独立に上書きできます。書き込み削減量を実機で
