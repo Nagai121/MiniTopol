@@ -32,6 +32,11 @@ class TieredProvider(OptimizedProvider):
             raise ValueError("Expected a logical relative path")
         return self.tiers.offload(request["relative"])
 
+    def ingest_storage(self, request):
+        if not isinstance(request, dict) or set(request) != {"trajectory"}:
+            raise ValueError("Expected a trajectory ID")
+        return self.tiers.ingest_sources(request["trajectory"])
+
     def prune_storage(self, request):
         if not isinstance(request, dict) or set(request) - {"all_cache"}:
             raise ValueError("Invalid prune parameters")
