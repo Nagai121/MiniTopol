@@ -161,6 +161,8 @@ class TieredStorage:
             raise ValueError("No external storage is configured")
         root = Path(value)
         marker = root / ".minitopol-storage-identity"
+        if root == self.root or root in self.root.parents or self.root in root.parents:
+            raise ValueError("External storage overlaps internal MiniTopol Storage")
         if not root.is_dir() or not marker.is_file():
             raise FileNotFoundError(f"Registered external MiniTopol Storage is unavailable: {root}")
         if marker.read_text(encoding="utf-8").strip() != config["external_identity"]:
@@ -180,6 +182,9 @@ class TieredStorage:
                     root = root / EXTERNAL_NAME
                 elif not root.parent.is_dir():
                     raise FileNotFoundError(f"External drive root is unavailable: {root.parent}")
+                if root == self.root or root in self.root.parents or self.root in root.parents:
+                    raise ValueError(
+                        "External storage must not overlap the internal MiniTopol Storage")
                 previous = current["external_root"]
                 if previous is not None and str(root) != previous:
                     with self._db() as db:
@@ -276,7 +281,7 @@ class TieredStorage:
             try:
                 self._external_root(config)
                 external_available = True
-            except (FileNotFoundError, RuntimeError):
+            except (FileNotFoundError, RuntimeError, ValueError):
                 pass
         return {**config, **metrics, "external_available": external_available,
                 "available_at_start_bytes": self.available_at_start,
