@@ -19,9 +19,9 @@ from .virtual_rama_store import verify_dataset
 
 
 def logical_tables(workspace, relative, *, start=None, stop=None):
-    path = workspace.path / relative
+    path = workspace.resolve_path(relative)
     completed = read_json(path.with_suffix('.json'))
-    verify_dataset(path, completed)
+    verify_dataset(path, completed, workspace=workspace)
     ranges = []
     position = completed['info']['start']
     for part in completed['parts']:
@@ -46,7 +46,9 @@ def logical_tables(workspace, relative, *, start=None, stop=None):
     budget = layout.get('output_budget_bytes', 128 * 1024**2)
     if type(budget) is not int or budget <= 0:
         raise IOError('Invalid published virtual output budget')
-    proxy = ReadOnlyWorkspace(workspace.path, workspace.path / 'locks')
+    proxy = ReadOnlyWorkspace(
+        workspace.path, workspace.path / 'locks',
+        overrides=workspace.storage_read_overrides())
     ctx = AnalysisContext(
         proxy, info['trajectory'], coordinate_mode=parameters['coordinate_mode'],
         initial_whole=parameters['initial_whole'],
