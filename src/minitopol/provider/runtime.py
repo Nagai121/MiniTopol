@@ -565,6 +565,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, self.server.provider.offload_storage(payload))
         if self.path == "/v1/storage/prune":
             return self._send(200, self.server.provider.prune_storage(payload))
+        if self.path == "/v1/storage/ingest":
+            return self._send(200, self.server.provider.ingest_storage(payload))
         if self.path == "/v1/batches/plan":
             return self._send(200, self.server.provider.plan_batches(payload))
         if self.path == "/v1/batches/status":
