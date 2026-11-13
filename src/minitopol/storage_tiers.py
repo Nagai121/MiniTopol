@@ -110,6 +110,7 @@ class TieredStorage:
         if self.registry_marker.exists() and not self.database.is_file():
             raise FileNotFoundError("Storage placement catalog is missing; refusing a new empty catalog")
         self._mutex = threading.RLock()
+        self._touch_times = {}
         # Only a Provider restart takes a fresh free-space snapshot.
         self.available_at_start = shutil.disk_usage(self.root).free
         with self._db() as db:
@@ -326,6 +327,17 @@ class TieredStorage:
         return {"relative": relative, "sha256": digest, "bytes": size,
                 "external_copy_created": copied}
 
+    def _touch(self, relative):
+        # Persist cache recency at most once per two minutes per process:
+        # reliable enough for eviction without a DB write on every get().
+        now = time.monotonic()
+        if now - self._touch_times.get(relative, 0) < 120:
+            return
+        with self._db() as db:
+            db.execute("UPDATE tier_objects SET last_used=? WHERE relative=?",
+                       (time.time(), relative))
+        self._touch_times[relative] = now
+
     def _ensure_locked(self, relative, exempt=()):
         record = self._object(relative)
         internal = self._safe_path(self.root, relative)
@@ -335,6 +347,7 @@ class TieredStorage:
             return False
         if internal.exists():
             # Reuse already verified local copies without redundant SSD writes.
+            self._touch(relative)
             return False
         external = self._safe_path(self._external_root(), relative)
         size = record[2]
@@ -342,9 +355,7 @@ class TieredStorage:
             raise OSError(f"Dataset {relative} exceeds the configured temporary cache limit")
         self._prune(required=size, exempt=tuple(exempt) + (relative,))
         _copy_verified(external, internal, expected=record[1])
-        with self._db() as db:
-            db.execute("UPDATE tier_objects SET last_used=? WHERE relative=?",
-                       (time.time(), relative))
+        self._touch(relative)
         return True
 
     def ensure(self, relative):
