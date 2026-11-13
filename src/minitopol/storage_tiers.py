@@ -374,6 +374,50 @@ class TieredStorage:
         return [self.ensure(name) for name in targets if self._object(name) is not None]
 
 
+    def ingest_sources(self, trajectory):
+        """Explicitly adopt converted raw topology/XTC into managed storage.
+
+        Source fingerprints in the immutable trajectory identity are retained.
+        Manifest absolute source paths are repointed only after verified copies.
+        Originals are never deleted.
+        """
+        from .storage import atomic_json, fingerprint, read_json, identifier
+
+        identifier(trajectory)
+        relative = f"trajectories/{trajectory}"
+        self.ensure(relative)
+        with self._lock(relative):
+            manifest_path = self.root / relative / "manifest.json"
+            manifest = read_json(manifest_path)
+            source_identity = manifest.get("options", {}).get("source", {})
+            inputs = {}
+            for kind in ("tpr", "gro", "pdb", "xtc"):
+                key = kind + "_path"
+                if key not in manifest:
+                    continue
+                source = Path(manifest[key]).resolve(strict=True)
+                expected = source_identity.get(kind)
+                if expected != fingerprint(source):
+                    raise ValueError(f"Manifest source fingerprint differs: {source}")
+                inputs[key] = (kind, source)
+            if not inputs or "xtc_path" not in inputs:
+                raise ValueError("Converted trajectory has no verifiable raw inputs")
+            destination = self.root / "sources" / "manual" / trajectory
+            updated = dict(manifest)
+            copied = []
+            for key, (kind, source) in inputs.items():
+                target = destination / (kind + source.suffix.lower())
+                if source == target:
+                    updated[key] = str(target)
+                    continue
+                _copy_verified(source, target)
+                updated[key] = str(target)
+                copied.append(str(target))
+            if updated != manifest:
+                atomic_json(manifest_path, updated)
+            return {"relative": f"sources/manual/{trajectory}",
+                    "files": copied, "originals_retained": True}
+
 def migrate_workspace(old, new):
     """Explicitly copy and verify a legacy Workspace; never remove originals."""
     source, target = Path(old).resolve(), Path(new).resolve()
