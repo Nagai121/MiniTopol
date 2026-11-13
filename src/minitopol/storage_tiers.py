@@ -467,6 +467,13 @@ def migrate_workspace(old, new):
     if target.exists():
         target.rmdir()  # An empty destination can be populated atomically.
     _, _, copied = _copy_verified(source, target, expected=digest)
+    record = Path.home() / ".minitopol" / "storage-location.json"
+    if record.is_file():
+        settings = json.loads(record.read_text(encoding="utf-8"))
+        if settings.get("path") == str(source):
+            temporary = record.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"path": str(target)}), encoding="utf-8")
+            os.replace(temporary, record)
     return {"source": str(source), "destination": str(target),
             "bytes": size, "sha256": digest, "copied": copied,
             "original_retained": True}
