@@ -31,6 +31,8 @@ def main(argv=None):
     configure.add_argument("--cache-percent", type=float)
     configure.add_argument("--prefetch-batches", type=int)
     configure.add_argument("--write-policy", choices=["longevity", "balanced", "throughput"])
+    ingest = storage_commands.add_parser("ingest")
+    ingest.add_argument("trajectory", help="Adopt original topology and XTC into sources/manual")
     offload = storage_commands.add_parser("offload")
     offload.add_argument("relative", help="Managed trajectories/ID, descriptors/NAME/ID, or sources/GROUP/ID")
     prune = storage_commands.add_parser("prune")
@@ -133,6 +135,8 @@ def main(argv=None):
                 prefetch_batches=args.prefetch_batches, write_policy=args.write_policy)
         elif args.storage_action == "offload":
             result = manager.offload(args.relative)
+        elif args.storage_action == "ingest":
+            result = manager.ingest_sources(args.trajectory)
         else:
             result = manager.prune(all_cache=args.all)
         print(json.dumps(result, ensure_ascii=False, indent=2))
