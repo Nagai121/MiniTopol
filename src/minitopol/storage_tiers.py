@@ -103,6 +103,9 @@ class TieredStorage:
         self.lock_root.mkdir(parents=True, exist_ok=True)
         (self.root / "staging").mkdir(exist_ok=True)
         self.database = self.root / "storage_index.sqlite3"
+        self.registry_marker = self.root / ".minitopol-tier-registry"
+        if self.registry_marker.exists() and not self.database.is_file():
+            raise FileNotFoundError("Storage placement catalog is missing; refusing a new empty catalog")
         self._mutex = threading.RLock()
         # Only a Provider restart takes a fresh free-space snapshot.
         self.available_at_start = shutil.disk_usage(self.root).free
@@ -119,6 +122,8 @@ class TieredStorage:
                                 ("external_identity", None)):
                 db.execute("INSERT OR IGNORE INTO tier_settings VALUES (?, ?)",
                            (name, json.dumps(value)))
+        if not self.registry_marker.exists():
+            self.registry_marker.write_text("schema=1\\n", encoding="utf-8")
         config = self.settings()
         if config["external_root"] is not None:
             self._external_root(config)  # Never recreate a missing registered disk.
@@ -162,7 +167,11 @@ class TieredStorage:
             if external_root is not None:
                 root = Path(external_root).expanduser().resolve()
                 if root.name != EXTERNAL_NAME:
+                    if not root.is_dir():
+                        raise FileNotFoundError(f"External drive root is not mounted: {root}")
                     root = root / EXTERNAL_NAME
+                elif not root.parent.is_dir():
+                    raise FileNotFoundError(f"External drive root is unavailable: {root.parent}")
                 previous = current["external_root"]
                 if previous is not None and str(root) != previous:
                     with self._db() as db:
