@@ -198,6 +198,10 @@ class TieredStorage:
                 if write_policy not in ("longevity", "balanced", "throughput"):
                     raise ValueError("Invalid write_policy")
                 changes["write_policy"] = write_policy
+                if prefetch_batches is None:
+                    changes["prefetch_batches"] = {
+                        "longevity": 1, "balanced": 2, "throughput": 4
+                    }[write_policy]
             if prefetch_batches is not None:
                 if type(prefetch_batches) is not int or not 1 <= prefetch_batches <= 64:
                     raise ValueError("prefetch_batches must be between 1 and 64")
@@ -271,6 +275,9 @@ class TieredStorage:
                     if not record or record[0] != "external":
                         continue
                     path = self._safe_path(self.root, relative)
+                    if path.exists() and _tree_digest(path)[0] != record[1]:
+                        # Locally modified data must never be discarded as a cache.
+                        continue
                     if path.is_dir():
                         shutil.rmtree(path)
                     elif path.exists():
@@ -428,6 +435,8 @@ def migrate_workspace(old, new):
     if target.exists() and any(target.iterdir()):
         raise FileExistsError(f"Destination is not empty: {target}")
     digest, size = _tree_digest(source)
+    if target.exists():
+        target.rmdir()  # An empty destination can be populated atomically.
     _, _, copied = _copy_verified(source, target, expected=digest)
     return {"source": str(source), "destination": str(target),
             "bytes": size, "sha256": digest, "copied": copied,
