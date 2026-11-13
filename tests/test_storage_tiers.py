@@ -34,6 +34,7 @@ def test_offload_verified_cache_eviction_and_reuse(tmp_path):
     manager.configure(external_root=tmp_path / "external", enabled=True)
     entry = manager.offload("trajectories/trajectory-one")
     assert entry["bytes"] == len(b"position data")
+    assert manager.status()["external_copy_operations"] == 1
     external = tmp_path / "external" / "MiniTopol Storage"
     assert (external / "trajectories/trajectory-one/A.zarr/positions/0").read_bytes() == b"position data"
     before = manager.offload("trajectories/trajectory-one")
@@ -44,6 +45,8 @@ def test_offload_verified_cache_eviction_and_reuse(tmp_path):
     assert (path / "A.zarr/positions/0").read_bytes() == b"position data"
     assert manager.ensure("trajectories/trajectory-one")["transferred"] is False
     assert manager.status()["temporary_cache_bytes"] == len(b"position data")
+    assert manager.status()["internal_copy_operations"] == 1
+    assert manager.status()["internal_written_bytes"] == len(b"position data")
 
 
 def test_bad_external_copy_never_published(tmp_path):
