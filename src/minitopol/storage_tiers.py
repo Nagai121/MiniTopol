@@ -117,6 +117,7 @@ class TieredStorage:
         # Cache verification is scoped to this process. Never trust an existing
         # internal copy on a new Provider startup without checking its digest.
         self._validated_internal = {}
+        self._validated_external = {}
         # Only a Provider restart takes a fresh free-space snapshot.
         self.available_at_start = shutil.disk_usage(self.root).free
         with self._db() as db:
@@ -358,6 +359,7 @@ class TieredStorage:
                 raise FileNotFoundError(f"Cannot offload missing internal data: {relative}")
             digest, size, copied = _copy_verified(internal_path, external_path)
             self._validated_internal[relative] = digest
+            self._validated_external[relative] = digest
             with self._db() as db:
                 db.execute("INSERT OR REPLACE INTO tier_objects VALUES (?, 'external', ?, ?, ?)",
                            (relative, digest, size, time.time()))
@@ -381,6 +383,16 @@ class TieredStorage:
                        (time.time(), relative))
         self._touch_times[relative] = now
 
+    def _direct_external(self, relative, record):
+        """Verify one immutable external primary before read-only direct access."""
+        external = self._safe_path(self._external_root(), relative)
+        if self._validated_external.get(relative) != record[1]:
+            digest, size = _tree_digest(external)
+            if digest != record[1] or size != record[2]:
+                raise IOError(f"External primary differs from its published checksum: {relative}")
+            self._validated_external[relative] = digest
+        return external
+
     def _ensure_locked(self, relative, exempt=()):
         record = self._object(relative)
         internal = self._safe_path(self.root, relative)
@@ -402,8 +414,19 @@ class TieredStorage:
         external = self._safe_path(self._external_root(), relative)
         size = record[2]
         if size > self._cap():
-            raise OSError(f"Dataset {relative} exceeds the configured temporary cache limit")
-        self._prune(required=size, exempt=tuple(exempt) + (relative,))
+            # No SSD copy. The consuming request reads the verified external
+            # primary via the Workspace's thread-isolated read-only overlay.
+            self._direct_external(relative, record)
+            return "direct"
+        try:
+            self._prune(required=size, exempt=tuple(exempt) + (relative,))
+        except OSError as exc:
+            if "Temporary storage limit cannot accommodate" not in str(exc):
+                raise
+            # All remaining cache entries may be pinned by the same request.
+            # Reading directly avoids violating the configured SSD allowance.
+            self._direct_external(relative, record)
+            return "direct"
         _copy_verified(external, internal, expected=record[1])
         with self._db() as db:
             db.execute("UPDATE tier_objects SET last_used=? WHERE relative=?",
@@ -417,7 +440,9 @@ class TieredStorage:
     def ensure(self, relative):
         relative = logical_path(relative)
         with self._lock(relative):
-            return {"relative": relative, "transferred": self._ensure_locked(relative)}
+            outcome = self._ensure_locked(relative)
+            return {"relative": relative, "transferred": outcome is True,
+                    "direct_read": outcome == "direct"}
 
     def request_paths(self, request, workspace):
         if not isinstance(request, dict):
@@ -454,10 +479,16 @@ class TieredStorage:
                     managed = {row[0] for row in db.execute(
                         "SELECT relative FROM tier_objects WHERE primary_tier='external' "
                         f"AND relative IN ({placeholders})", paths)}
+                redirects = {}
                 for name in paths:
                     if name in managed:
-                        self._ensure_locked(name, exempt=paths)
-            yield
+                        outcome = self._ensure_locked(name, exempt=paths)
+                        if outcome == "direct":
+                            redirects[name] = self._direct_external(name, self._object(name))
+                with workspace.storage_read_scope(redirects):
+                    yield
+            else:
+                yield
 
     def prefetch(self, request, workspace):
         if not self.settings()["enabled"]:
