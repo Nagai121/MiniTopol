@@ -67,7 +67,7 @@ class BondStore:
             "point_i": pa.array([x for x, _ in edge_list], type=pa.int64()),
             "point_j": pa.array([y for _, y in edge_list], type=pa.int64()),
         })
-        with self.workspace.lock("trajectory-bonds-" + trajectory):
+        with self.workspace.storage_write("trajectories/" + trajectory), self.workspace.lock("trajectory-bonds-" + trajectory):
             if marker.is_file():
                 old = read_json(marker)
                 if any(old.get(k) != v for k, v in record.items()):
