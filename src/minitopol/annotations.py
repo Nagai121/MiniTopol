@@ -64,7 +64,7 @@ def annotate(registry, trajectory, *, chains, alpha_carbons=None, masses=None, r
 
 
 def annotations(registry, trajectory):
-    path = registry.workspace.trajectory_path(trajectory) / "annotations.parquet"
+    path = registry.workspace.read_trajectory_path(trajectory) / "annotations.parquet"
     if not path.exists():
         return {"schema": 1, "chains": [], "alpha_carbons": None, "masses": {}, "radii": {}}, {}
     import json
