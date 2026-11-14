@@ -98,15 +98,21 @@ class Registry:
         definition["descriptor_definitions"] = self._normalize_descriptors(name, definition["descriptor_definitions"])
         return definition
 
+    def _read_trajectory_path(self, trajectory):
+        # Virtual Rama reconstructs its own minimal read-only Workspace.
+        # It already resolves its own external overlays, so retain that API.
+        resolve = getattr(self.workspace, "read_trajectory_path", None)
+        return resolve(trajectory) if resolve is not None else self.workspace.trajectory_path(trajectory)
+
     def manifest(self, trajectory):
-        result = read_json(self.workspace.read_trajectory_path(trajectory) / "manifest.json")
+        result = read_json(self._read_trajectory_path(trajectory) / "manifest.json")
         if result["status"] != "complete":
             raise ValueError("Trajectory conversion has not completed")
         return result
 
     def atoms(self, trajectory):
         self.manifest(trajectory)
-        return pq.read_table(self.workspace.read_trajectory_path(trajectory) / "atoms.parquet")
+        return pq.read_table(self._read_trajectory_path(trajectory) / "atoms.parquet")
 
     def annotate(self, trajectory, **kwargs):
         from .annotations import annotate
@@ -120,12 +126,12 @@ class Registry:
     def system_conditions(self, trajectory):
         from .storage import read_json
         self.manifest(trajectory)
-        return read_json(self.workspace.read_trajectory_path(trajectory) / "system_conditions.json")
+        return read_json(self._read_trajectory_path(trajectory) / "system_conditions.json")
 
     def molecule_data(self, trajectory):
         """Return molecule and full-TPR atom attribute tables."""
         self.manifest(trajectory)
-        directory = self.workspace.read_trajectory_path(trajectory) / "system"
+        directory = self._read_trajectory_path(trajectory) / "system"
         return (pq.read_table(directory / "molecules.parquet"),
                 pq.read_table(directory / "atom_properties.parquet"))
 
@@ -165,7 +171,7 @@ class Registry:
         groups = None if definition is None else definition["groups"]
         if groups and any(max(group["atoms"]) >= manifest["atoms"] for group in groups):
             raise ValueError("Representation references atoms absent from this A topology")
-        source = zarr.open_group(str(self.workspace.read_trajectory_path(trajectory) / "A.zarr"), mode="r")
+        source = zarr.open_group(str(self._read_trajectory_path(trajectory) / "A.zarr"), mode="r")
         for offset in range(start, stop, chunk_frames):
             end = min(offset + chunk_frames, stop)
             positions = source["positions"][offset:end]
