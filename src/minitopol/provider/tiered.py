@@ -19,7 +19,8 @@ class TieredProvider(OptimizedProvider):
         self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tier-prefetch")
 
     def configure_storage(self, request):
-        allowed = {"enabled", "external_root", "cache_percent", "write_policy",
+        allowed = {"enabled", "external_root", "cache_percent", "cache_limit_bytes",
+                   "cache_slack_percent", "cache_slack_bytes", "write_policy",
                    "prefetch_batches"}
         if not isinstance(request, dict) or set(request) - allowed:
             raise ValueError("Invalid storage configuration")
