@@ -349,6 +349,7 @@ def test_oversize_ramachandran_recipe_and_trajectory(tmp_path, trajectory):
     tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"])
     report = analyze(ws, tid, descriptors=["ramachandran"], coordinate_mode="nonperiodic")
     assert report["status"] == "complete"
+    expected = ws.query_results(descriptor="ramachandran", trajectory=tid)
     usb = tmp_path / "usb"
     usb.mkdir()
     storage = TieredStorage(ws.path)
@@ -357,6 +358,9 @@ def test_oversize_ramachandran_recipe_and_trajectory(tmp_path, trajectory):
     storage.offload("descriptors/ramachandran/" + tid)
     storage.prune(all_cache=True)
     storage.configure(cache_percent=1e-9)
+    # A direct Workspace query must regenerate the virtual Rama table from
+    # the published external A and descriptor without a Provider session.
+    assert ws.query_results(descriptor="ramachandran", trajectory=tid).equals(expected)
     provider = TieredProvider(ws.path, 16 * 1024**2)
     try:
         result = provider.get(
