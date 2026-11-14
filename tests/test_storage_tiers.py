@@ -568,3 +568,94 @@ def test_linux_external_identity_checked_again_if_drive_disappears(tmp_path, mon
     with pytest.raises(RuntimeError, match="separately mounted"):
         storage.offload("trajectories/trajectory-one")
     assert (local / "trajectories/trajectory-one/A.zarr/positions/0").exists()
+
+
+def test_direct_registry_workspace_queries_after_external_offload(tmp_path, trajectory):
+    import numpy as np
+    import pyarrow as pa
+    from minitopol import Registry
+    from minitopol.descriptors import DescriptorDefinition, ResultStore
+
+    ws = Workspace(tmp_path / "internal")
+    tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"],
+                  chunk_frames=3)
+    registry = Registry(ws)
+    reference_manifest = registry.manifest(tid)
+    reference_atoms = registry.atoms(tid)
+    baseline = list(registry.blocks(tid))
+    definition = DescriptorDefinition("sample", "1", "A", "test", "unit")
+    ResultStore(ws).publish(
+        tid, definition, 0, reference_manifest["frames"],
+        pa.table({"frame": [0, 2, 4], "value": [1.0, 2.0, 3.0]}))
+    reference_table = ws.query_results(descriptor="sample", trajectory=tid)
+
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(ws.path)
+    storage.configure(external_root=usb, enabled=True)
+    storage.offload("trajectories/" + tid)
+    storage.offload("descriptors/sample/" + tid)
+    storage.prune(all_cache=True)
+    assert not (ws.path / "trajectories" / tid).exists()
+    assert not (ws.path / "descriptors" / "sample" / tid).exists()
+
+    # No Provider and no explicit storage_read_scope.
+    assert registry.manifest(tid) == reference_manifest
+    assert registry.atoms(tid).equals(reference_atoms)
+    after = list(registry.blocks(tid))
+    assert len(after) == len(baseline)
+    for before, actual in zip(baseline, after):
+        np.testing.assert_array_equal(actual.positions, before.positions)
+        np.testing.assert_array_equal(actual.time, before.time)
+        np.testing.assert_array_equal(actual.box, before.box)
+    assert ws.query_results(descriptor="sample", trajectory=tid).equals(reference_table)
+    # Direct access must not implicitly re-stage the data onto the SSD.
+    assert not (ws.path / "trajectories" / tid).exists()
+
+
+def test_direct_external_read_rejects_corrupt_primary(tmp_path, trajectory):
+    from minitopol import Registry
+    ws = Workspace(tmp_path / "internal")
+    tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"])
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(ws.path)
+    storage.configure(external_root=usb, enabled=True)
+    storage.offload("trajectories/" + tid)
+    storage.prune(all_cache=True)
+    external = usb / "MiniTopol Storage" / "trajectories" / tid / "manifest.json"
+    external.write_text("corrupted", encoding="utf-8")
+    with pytest.raises(IOError, match="External primary differs"):
+        Registry(ws).manifest(tid)
+
+
+def test_numpy_chunk_grouping_keeps_order_and_duplicate_frames(tmp_path, trajectory):
+    import numpy as np
+    from minitopol import Registry
+    from minitopol.provider.tiered import TieredProvider
+
+    ws = Workspace(tmp_path / "internal")
+    tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"],
+                  chunk_frames=3)
+    registry = Registry(ws)
+    baseline = list(registry.blocks(tid))
+    coordinates = np.concatenate([block.positions for block in baseline], axis=0)
+    times = np.concatenate([block.time for block in baseline])
+    boxes = np.concatenate([block.box for block in baseline], axis=0)
+    chosen = [8, 0, 4, 8, 2, 1, 0]
+    selected = [0, 2]
+    provider = TieredProvider(ws.path, 16 * 1024**2)
+    try:
+        manifest = registry.manifest(tid)
+        output = provider._load_coordinates(
+            tid, chosen, selected, manifest["frames"], manifest)
+        np.testing.assert_array_equal(output[0], coordinates[chosen][:, selected])
+        np.testing.assert_array_equal(output[1], times[chosen])
+        np.testing.assert_array_equal(output[2], boxes[chosen])
+        # Repeat to cover the decoded-chunk cache-hit path.
+        again = provider._load_coordinates(
+            tid, chosen, selected, manifest["frames"], manifest)
+        for actual, expected in zip(again, output):
+            np.testing.assert_array_equal(actual, expected)
+    finally:
+        provider.close()
