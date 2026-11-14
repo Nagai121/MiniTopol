@@ -54,7 +54,7 @@ def annotate(registry, trajectory, *, chains, alpha_carbons=None, masses=None, r
         ("run", pa.int64()), ("sequence_position", pa.int64())]))
     table = table.replace_schema_metadata({b"minitopol_annotations": canonical(spec).encode()})
     path = registry.workspace.trajectory_path(trajectory) / "annotations.parquet"
-    with registry.workspace.lock("trajectory-" + trajectory):
+    with registry.workspace.storage_write("trajectories/" + trajectory), registry.workspace.lock("trajectory-" + trajectory):
         if path.exists():
             if pq.read_metadata(path).metadata[b"minitopol_annotations"] != canonical(spec).encode():
                 raise ValueError("Existing annotations are immutable; import under a new trajectory ID to change them")

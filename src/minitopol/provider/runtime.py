@@ -27,7 +27,7 @@ from ..workspace import Workspace
 
 PROTOCOL = 1
 GLOBAL_DESCRIPTORS = frozenset(("rmsf", "msd", "time_correlation", "dynamic_correlation"))
-MAX_MESSAGE = 131072
+MAX_MESSAGE = 1048576
 
 
 def registry_path():
@@ -499,7 +499,7 @@ class DataProvider:
         if name == "contacts":
             # Preserve frequency rows (frame IS NULL) in a frame-limited query.
             with self.workspace.catalog() as con:
-                paths = [str(self.workspace.path / r[0]) for r in con.execute(
+                paths = [str(self.workspace.resolve_path(r[0])) for r in con.execute(
                     "SELECT COALESCE(p.path,r.path) FROM results r "
                     "LEFT JOIN result_parts p ON p.result_id=r.id "
                     "WHERE r.trajectory=? AND r.descriptor='contacts' ORDER BY r.id,p.part_index",
@@ -546,6 +546,8 @@ class Handler(BaseHTTPRequestHandler):
                                         **self.server.provider.cache.status()})
             if self.path == "/v1/list":
                 return self._send(200, self.server.provider.list_data())
+            if self.path == "/v1/storage/status":
+                return self._send(200, self.server.provider.storage_status())
             return self._send(404, {"error": "Unknown route"})
         if self.command != "POST":
             return self._send(405, {"error": "Method not allowed"})
@@ -557,6 +559,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, self.server.provider.get(payload))
         if self.path == "/v1/release":
             return self._send(200, self.server.provider.cache.release(payload["lease"]))
+        if self.path == "/v1/storage/configure":
+            return self._send(200, self.server.provider.configure_storage(payload))
+        if self.path == "/v1/storage/offload":
+            return self._send(200, self.server.provider.offload_storage(payload))
+        if self.path == "/v1/storage/prune":
+            return self._send(200, self.server.provider.prune_storage(payload))
+        if self.path == "/v1/storage/ingest":
+            return self._send(200, self.server.provider.ingest_storage(payload))
+        if self.path == "/v1/storage/ensure":
+            return self._send(200, self.server.provider.ensure_storage(payload))
+        if self.path == "/v1/batches/plan":
+            return self._send(200, self.server.provider.plan_batches(payload))
+        if self.path == "/v1/batches/status":
+            return self._send(200, self.server.provider.plan_status(payload["plan_id"]))
+        if self.path == "/v1/batches/cancel":
+            return self._send(200, self.server.provider.cancel_plan(payload["plan_id"]))
         if self.path == "/v1/stop":
             if self.server.provider.cache.status()["active_leases"]:
                 return self._send(409, {"error": "Release active leases before stopping Provider"})
@@ -603,9 +621,11 @@ def serve(*, budget_bytes=None, provider_factory=None):
             if type(budget_bytes) is not int or not 0 < budget_bytes <= budget:
                 raise ValueError('Explicit budget exceeds the startup available-RAM allowance')
             budget = budget_bytes
+        if not Path(config["workspace"]).is_dir():
+            raise FileNotFoundError("Registered MiniTopol Storage is missing: " + config["workspace"])
         if provider_factory is None:
-            from .optimized import OptimizedProvider
-            provider_factory = OptimizedProvider
+            from .tiered import TieredProvider
+            provider_factory = TieredProvider
         provider = provider_factory(config["workspace"], budget)
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.daemon_threads = True
@@ -622,7 +642,10 @@ def serve(*, budget_bytes=None, provider_factory=None):
             server.serve_forever(poll_interval=0.2)
         finally:
             server.server_close()
-            provider.cache.close()
+            if hasattr(provider, "close"):
+                provider.close()
+            else:
+                provider.cache.close()
     finally:
         if session is not None:
             with FileLock(str(path) + ".registration.lock"):

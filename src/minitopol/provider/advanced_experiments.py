@@ -86,7 +86,7 @@ class AdvancedProvider(ScheduledProvider):
     def _encoding_key(self, trajectory, name):
         paths = self._paths(trajectory, name)
         return ('encoded', trajectory, name, tuple(
-            (result_id, relative, self._file_version((self.workspace.path / relative).with_suffix('.json')))
+            (result_id, relative, self._file_version((self.workspace.resolve_path(relative)).with_suffix('.json')))
             for result_id, relative in paths))
 
     def _descriptor(self, trajectory, name, frames):
@@ -100,7 +100,7 @@ class AdvancedProvider(ScheduledProvider):
                     self._record('encoded_response_reused_bytes', len(table.data))
                     return table
             if name in ('time_correlation', 'dynamic_correlation') and sum(
-                    read_json((self.workspace.path / relative).with_suffix('.json')).get('rows', 0)
+                    read_json((self.workspace.resolve_path(relative)).with_suffix('.json')).get('rows', 0)
                     for _, relative, _ in key[-1]) >= 8_000_000:
                 encoded = self._encode_large_global(trajectory, name)
                 self._cached_part(key, lambda: (encoded, len(encoded.data)))
@@ -120,7 +120,7 @@ class AdvancedProvider(ScheduledProvider):
 
     def _encode_large_global(self, trajectory, name):
         with self.workspace.catalog() as con:
-            paths = [str(self.workspace.path / row[0]) for row in con.execute(
+            paths = [str(self.workspace.resolve_path(row[0])) for row in con.execute(
                 "SELECT COALESCE(p.path,r.path) FROM results r LEFT JOIN result_parts p ON p.result_id=r.id "
                 "WHERE r.trajectory=? AND r.descriptor=? ORDER BY r.id,p.part_index",
                 [trajectory, name]).fetchall()]
@@ -167,7 +167,7 @@ class AdvancedProvider(ScheduledProvider):
         if ('indexed' in self.features or 'native' in self.features) and name == 'ramachandran' and sparse:
             paths = self._paths(trajectory, name)
             if any(not marker.is_file() or read_json(marker).get('schema') != 5
-                   for marker in ((self.workspace.path / path).with_suffix('.json') for _, path in paths)):
+                   for marker in ((self.workspace.resolve_path(path)).with_suffix('.json') for _, path in paths)):
                 return super()._measured_descriptor(trajectory, name, frames)
             tables = []
             for result_id, relative in paths:
@@ -190,9 +190,11 @@ class AdvancedProvider(ScheduledProvider):
             if len(descriptors) < 2:
                 return builder()
 
+            overlays = self.workspace.storage_read_overrides()
             def load(name):
                 started = time.perf_counter_ns()
-                table = self._measured_descriptor(tid, name, frames)
+                with self.workspace.storage_read_scope(overlays):
+                    table = self._measured_descriptor(tid, name, frames)
                 return table, time.perf_counter_ns() - started
 
             with ThreadPoolExecutor(max_workers=self.workers) as pool:

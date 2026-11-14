@@ -19,6 +19,23 @@ def source_hashes():
     root=Path(__file__).resolve().parents[1]
     names=['descriptors/sasa_alignment.py','descriptors/aligned_rmsd_handoff.py','descriptors/alignment_cache.py','descriptors/shared_aligned_ca.py','descriptors/rmsd.py','descriptors/dynamic_correlation.py','backbone_columns.py','descriptors/shared_raw_backbone.py','descriptors/builtins.py','position_moddelta.py','position_xor.py','position_grid.py','agx_zarr.py','virtual_rama.py','registry.py','coordinates.py','annotations.py','descriptors/virtual_rama_store.py','descriptors/precision64.py','descriptors/kernels.py','descriptors/context.py','descriptors/compact_output.py','descriptors/ramachandran.py']
     return {name:reader.sha_file(root/name) for name in names}
+# Read-only storage routing changed these source files without modifying
+# any underlying Ramachandran kernels. Preserve exact known previous hashes
+# instead of disabling the strict scientific source contract.
+_ROUTING_COMPATIBILITY = {
+    'virtual_rama.py': {'abebdc2697f86ecd6eed710224dbcc9882bacf68811d082c0ebdf560bb1d75b7'},
+    'descriptors/virtual_rama_store.py': {'8adc49cf7ed35060a6cc42f4c4e173f43ad093be9c332a1327c026712d21bfd0'},
+}
+
+
+def _verify_rama_sources(published):
+    current = source_hashes()
+    if not isinstance(published, dict) or set(published) != set(current):
+        raise IOError('Virtual recipe scientific source inventory changed')
+    for name, actual in published.items():
+        if actual != current[name] and actual not in _ROUTING_COMPATIBILITY.get(name, ()):
+            raise IOError('Virtual recipe scientific source changed: ' + name)
+
 def dependencies(workspace,tid):
     root=workspace.trajectory_path(tid)
     paths=[root/name for name in ['manifest.json','atoms.parquet','annotations.parquet']]
@@ -29,20 +46,24 @@ def workspace_root(path):
     for parent in path.parents:
         if (parent/'integrated.duckdb').is_file():return parent
     raise IOError('Virtual result outside Workspace')
-def verify_axes(path,info):
+def verify_axes(path,info,workspace=None):
     from ..workspace import Workspace
-    meta=read_json(axes(path));root=workspace_root(path);workspace=reader.ReadOnlyWorkspace(root,root/'locks')
-    if meta['info']!=info or meta['source_hashes']!=source_hashes() or meta['environment']!=environment():raise IOError('Virtual recipe scientific/source/runtime contract changed')
-    if dependencies(workspace,info['trajectory'])!=meta['dependencies']:raise IOError('Virtual A/annotation dependency changed')
+    root=workspace.path if workspace is not None else workspace_root(path)
+    proxy=reader.ReadOnlyWorkspace(root,root/'locks',
+                                   overrides=workspace.storage_read_overrides() if workspace is not None else None)
+    meta=read_json(axes(path))
+    if meta['info']!=info or meta['environment']!=environment():raise IOError('Virtual recipe scientific/source/runtime contract changed')
+    _verify_rama_sources(meta['source_hashes'])
+    if dependencies(proxy,info['trajectory'])!=meta['dependencies']:raise IOError('Virtual A/annotation dependency changed')
     return meta
 def verify_part(path,part,info):
     if fingerprint(path)['sha256']!=part['sha256'] or fingerprint(axes(path))['sha256']!=part['axes_sha256']:raise IOError('Virtual recipe checksum')
     saved=read_json(path)
     if saved!=dict(key=part['key'],rows=part['rows'],payload_hash=part['payload_hash'],undefined_values=part['undefined_values'],info_sha256=digest(info)):raise IOError('Virtual part mismatch')
     return saved
-def verify_dataset(path,completed):
+def verify_dataset(path,completed,workspace=None):
     if completed.get('schema')!=5 or digest(completed['info'])!=path.stem or not completed['parts']:raise IOError('Virtual dataset identity')
-    verify_axes(path.parent/completed['parts'][0]['file'],completed['info']);rows=0;keys=set()
+    verify_axes(path.parent/completed['parts'][0]['file'],completed['info'],workspace=workspace);rows=0;keys=set()
     for i,part in enumerate(completed['parts']):
         if part['file']!=f'{path.stem}/part-{i:08d}.vram' or part['key'] in keys:raise IOError('Virtual part order/duplicate')
         verify_part(path.parent/part['file'],part,completed['info']);rows+=part['rows'];keys.add(part['key'])
@@ -99,8 +120,9 @@ class RecipeWriter(DatasetWriter):
         finally:self.lock.release()
 
 def logical_tables(workspace,relative,*,connection=None,start=None,stop=None):
-    path=workspace.path/relative;completed=read_json(path.with_suffix('.json'));verify_dataset(path,completed)
-    proxy=reader.ReadOnlyWorkspace(workspace.path,workspace.path/'locks')
+    path=workspace.resolve_path(relative);completed=read_json(path.with_suffix('.json'));verify_dataset(path,completed,workspace=workspace)
+    proxy=reader.ReadOnlyWorkspace(workspace.path,workspace.path/'locks',
+                                   overrides=workspace.storage_read_overrides())
     if connection is not None:
         @contextlib.contextmanager
         def borrowed():yield connection

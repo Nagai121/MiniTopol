@@ -64,9 +64,11 @@ class ScheduledProvider(query_experiments.QueryProvider):
         return tuple(result_id for result_id, _ in self._paths(tid, name))
 
     def _submit(self, tid, name, frames, revision):
+        overlays = self.workspace.storage_read_overrides()
         def load():
             started = time.perf_counter_ns()
-            table = self._measured_descriptor(tid, name, frames)
+            with self.workspace.storage_read_scope(overlays):
+                table = self._measured_descriptor(tid, name, frames)
             return table, time.perf_counter_ns() - started, revision
 
         return self.scheduler.submit(load)

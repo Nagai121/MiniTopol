@@ -92,7 +92,7 @@ def test_default_workspace_does_not_depend_on_cwd(tmp_path, monkeypatch):
     other.mkdir()
     monkeypatch.chdir(other)
     first = Workspace()
-    assert first.path == project / "BaseTraj_Workspace"
+    assert first.path == project.parent / "MiniTopol Storage"
     sentinel = first.path / "keep.txt"
     sentinel.write_text("existing user data")
     monkeypatch.chdir(project)

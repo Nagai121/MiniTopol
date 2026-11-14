@@ -130,7 +130,7 @@ class HydrogenBondStore:
         self.directory = workspace.trajectory_path(trajectory) / "hydrogen_bonds"
         self.complete_path = self.directory / "manifest.json"
         self.progress_path = self.directory / "progress.json"
-        self.lock = workspace.lock("trajectory-hydrogen-bonds-" + trajectory)
+        self.lock = workspace.storage_writer_lock("trajectories/" + trajectory, "trajectory-hydrogen-bonds-" + trajectory)
         self.lock.acquire()
         try:
             elements = np.asarray(elements, dtype=str)

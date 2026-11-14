@@ -200,7 +200,7 @@ class ExperimentalProvider(runtime.DataProvider):
                     parts.append(table.filter(pc.is_in(table['frame'], value_set=values)))
             return pa.concat_tables(parts)
         with self.workspace.catalog() as con:
-            paths = [str(self.workspace.path / row[0]) for row in con.execute(
+            paths = [str(self.workspace.resolve_path(row[0])) for row in con.execute(
                 'SELECT COALESCE(p.path,r.path) FROM results r '
                 'LEFT JOIN result_parts p ON p.result_id=r.id '
                 'WHERE r.trajectory=? AND r.descriptor=? ORDER BY r.id,p.part_index',

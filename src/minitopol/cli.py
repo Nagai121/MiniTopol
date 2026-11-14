@@ -17,6 +17,36 @@ def main(argv=None):
     sub.add_parser("list")
     sub.add_parser("recover")
     sub.add_parser("migrate-atlas-sources")
+    migrate = sub.add_parser("migrate-workspace")
+    migrate.add_argument("source", help="Existing BaseTraj_Workspace directory")
+    migrate.add_argument("--destination", help="New MiniTopol Storage directory")
+    storage = sub.add_parser("storage")
+    storage_commands = storage.add_subparsers(dest="storage_action", required=True)
+    storage_commands.add_parser("status")
+    configure = storage_commands.add_parser("configure")
+    configure.add_argument("--external", help="External drive root or MiniTopol Storage")
+    switch = configure.add_mutually_exclusive_group()
+    switch.add_argument("--enable", action="store_true")
+    switch.add_argument("--disable", action="store_true")
+    budget = configure.add_mutually_exclusive_group()
+    budget.add_argument("--cache-percent", type=float,
+                        help="Percent of available startup bytes; default 10")
+    budget.add_argument("--cache-limit-gib", type=float,
+                        help="Absolute internal staging target in GiB")
+    configure.add_argument("--cache-slack-percent", type=float,
+                           help="Allowed overage as percent of target; default 10")
+    configure.add_argument("--cache-slack-gib", type=float,
+                           help="Additional burst allowance in GiB; default 0")
+    configure.add_argument("--prefetch-batches", type=int)
+    configure.add_argument("--write-policy", choices=["longevity", "balanced", "throughput"])
+    ingest = storage_commands.add_parser("ingest")
+    ingest.add_argument("trajectory", help="Adopt original topology and XTC into sources/manual")
+    offload = storage_commands.add_parser("offload")
+    offload.add_argument("relative", help="Managed trajectories/ID, descriptors/NAME/ID, or sources/GROUP/ID")
+    ensure = storage_commands.add_parser("ensure")
+    ensure.add_argument("relative", help="Restore an externally stored dataset to the internal cache")
+    prune = storage_commands.add_parser("prune")
+    prune.add_argument("--all", action="store_true")
     run = sub.add_parser("run")
     run.add_argument("jobs", help="JSON array of independent trajectory pipeline jobs")
     run.add_argument("--workers", type=int, default=6)
@@ -78,6 +108,11 @@ def main(argv=None):
     calculate.add_argument("--pair-block", type=int, default=32)
     calculate.add_argument("--fft-block", type=int, help="Default: adapt FFT time tile to the memory budget")
     args = parser.parse_args(argv)
+    if args.command == "migrate-workspace":
+        from .storage_tiers import migrate_workspace
+        destination = args.destination or args.workspace or Workspace.default_path()
+        print(json.dumps(migrate_workspace(args.source, destination), ensure_ascii=False, indent=2))
+        return
     if args.command == "run":
         if args.workspace:
             parser.error("run uses the explicit workspace in each job")
@@ -98,6 +133,36 @@ def main(argv=None):
             raise SystemExit(1)
         return
     workspace = Workspace(args.workspace)
+    if args.command == "storage":
+        from .storage_tiers import TieredStorage
+        manager = TieredStorage(workspace.path)
+        if args.storage_action == "status":
+            result = manager.status()
+        elif args.storage_action == "configure":
+            import math
+            for label, number in (("--cache-limit-gib", args.cache_limit_gib),
+                                  ("--cache-slack-gib", args.cache_slack_gib)):
+                if number is not None and (not math.isfinite(number) or number < 0):
+                    parser.error(f"{label} must be a nonnegative finite number")
+            result = manager.configure(
+                enabled=True if args.enable else (False if args.disable else None),
+                external_root=args.external, cache_percent=args.cache_percent,
+                cache_limit_bytes=(round(args.cache_limit_gib * 1024**3)
+                                   if args.cache_limit_gib is not None else None),
+                cache_slack_percent=args.cache_slack_percent,
+                cache_slack_bytes=(round(args.cache_slack_gib * 1024**3)
+                                   if args.cache_slack_gib is not None else None),
+                prefetch_batches=args.prefetch_batches, write_policy=args.write_policy)
+        elif args.storage_action == "offload":
+            result = manager.offload(args.relative)
+        elif args.storage_action == "ingest":
+            result = manager.ingest_sources(args.trajectory)
+        elif args.storage_action == "ensure":
+            result = manager.ensure(args.relative)
+        else:
+            result = manager.prune(all_cache=args.all)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     if args.command == "init":
         print(workspace.path)
     elif args.command == "migrate-atlas-sources":

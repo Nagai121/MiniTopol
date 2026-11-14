@@ -5,7 +5,7 @@ Provider lives in src/minitopol/provider/ and is the only owner of MiniTopol sto
 Register a Workspace from any directory in which minitopol is installed:
 
 ~~~bash
-python -m minitopol.provider register --workspace /path/to/BaseTraj_Workspace
+python -m minitopol.provider register --workspace "/path/to/MiniTopol Storage"
 python -m minitopol.provider serve
 ~~~
 
@@ -32,7 +32,7 @@ the Reader exposes the same logical columns and values.
 To prepare an optional on-disk cache for random Ramachandran requests:
 
 ~~~bash
-python -m minitopol.provider prepare-ramachandran TRAJECTORY_ID --workspace /path/to/BaseTraj_Workspace
+python -m minitopol.provider prepare-ramachandran TRAJECTORY_ID --workspace "/path/to/MiniTopol Storage"
 ~~~
 
 The derived files live under `work/provider-derived` by default.
