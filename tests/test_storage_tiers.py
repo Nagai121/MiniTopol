@@ -661,6 +661,11 @@ def test_numpy_chunk_grouping_keeps_order_and_duplicate_frames(tmp_path, traject
             tid, chosen, selected, manifest["frames"], manifest)
         for actual, expected in zip(again, output):
             np.testing.assert_array_equal(actual, expected)
+        # Check the actively used parallel decode implementation as well.
+        parallel = provider._parallel_coordinates(
+            tid, chosen, selected, manifest["frames"], manifest)
+        for actual, expected in zip(parallel, output):
+            np.testing.assert_array_equal(actual, expected)
     finally:
         provider.close()
 
