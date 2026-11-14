@@ -578,6 +578,7 @@ def test_direct_registry_workspace_queries_after_external_offload(tmp_path, traj
     import numpy as np
     import pyarrow as pa
     from minitopol import Registry
+    from minitopol.bond_store import BondStore
     from minitopol.descriptors import DescriptorDefinition, ResultStore
 
     ws = Workspace(tmp_path / "internal")
@@ -592,6 +593,9 @@ def test_direct_registry_workspace_queries_after_external_offload(tmp_path, traj
         tid, definition, 0, reference_manifest["frames"],
         pa.table({"frame": [0, 2, 4], "value": [1.0, 2.0, 3.0]}))
     reference_table = ws.query_results(descriptor="sample", trajectory=tid)
+    BondStore(ws).publish(tid, [(0, 1)], tpr_sha256="a" * 64,
+                          mapping_sha256="b" * 64)
+    expected_bonds = BondStore(ws).get(tid)
 
     usb = tmp_path / "usb"
     usb.mkdir()
@@ -613,6 +617,7 @@ def test_direct_registry_workspace_queries_after_external_offload(tmp_path, traj
         np.testing.assert_array_equal(actual.time, before.time)
         np.testing.assert_array_equal(actual.box, before.box)
     assert ws.query_results(descriptor="sample", trajectory=tid).equals(reference_table)
+    assert BondStore(ws).get(tid).equals(expected_bonds)
     # Direct access must not implicitly re-stage the data onto the SSD.
     assert not (ws.path / "trajectories" / tid).exists()
 
