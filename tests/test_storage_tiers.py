@@ -663,3 +663,21 @@ def test_numpy_chunk_grouping_keeps_order_and_duplicate_frames(tmp_path, traject
             np.testing.assert_array_equal(actual, expected)
     finally:
         provider.close()
+
+
+def test_direct_registry_can_use_verified_local_copy_when_drive_unmounted(tmp_path, trajectory):
+    from minitopol import Registry
+    ws = Workspace(tmp_path / "internal")
+    tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"])
+    manifest = Registry(ws).manifest(tid)
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(ws.path)
+    storage.configure(external_root=usb, enabled=True)
+    storage.offload("trajectories/" + tid)
+    # A verified internal replica still exists after offload.
+    shutil.rmtree(usb)
+    assert Registry(ws).manifest(tid) == manifest
+    (ws.path / "trajectories" / tid / "manifest.json").write_text("broken")
+    with pytest.raises(IOError, match="Local fallback differs"):
+        Registry(ws).manifest(tid)
