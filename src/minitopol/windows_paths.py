@@ -23,7 +23,7 @@ def windows_extended_string(value: str) -> str:
     return "\\\\?\\" + value
 
 
-def filesystem_path(value):
+def filesystem_path(value, *, threshold=220):
     """Upgrade deep Windows paths, preserving normal paths on other systems."""
     path = Path(value)
     if os.name != "nt":
@@ -32,6 +32,6 @@ def filesystem_path(value):
     if text.startswith("\\\\?\\"):
         return path
     # Leave ordinary paths unchanged. Allow room for common child file names.
-    if len(ntpath.abspath(text)) < 220:
+    if len(ntpath.abspath(text)) < threshold:
         return path
     return Path(windows_extended_string(text))
