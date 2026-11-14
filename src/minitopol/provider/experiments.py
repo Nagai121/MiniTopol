@@ -112,14 +112,24 @@ class ExperimentalProvider(runtime.DataProvider):
             arrays = tuple(source[name] for name in ('positions', 'time', 'box'))
             width = int(arrays[0].chunks[0])
         with runtime._stage(trace, 'chunk_grouping'):
-            groups = {}
-            for destination, frame in enumerate(frames):
-                groups.setdefault(frame // width, []).append((destination, frame))
+            # Native sort/diff avoids per-frame Python grouping. Keep stable
+            # destinations to preserve out-of-order and repeated requests.
+            requested = np.asarray(frames, dtype=np.int64)
+            chunk_ids = requested // width
+            order = np.argsort(chunk_ids, kind='stable')
+            sorted_groups = chunk_ids[order]
+            boundaries = np.concatenate((
+                np.array([0], dtype=np.int64),
+                np.flatnonzero(np.diff(sorted_groups)) + 1,
+                np.array([len(frames)], dtype=np.int64),
+            ))
+            group_ids = sorted_groups[boundaries[:-1]]
         if psutil.virtual_memory().available < self.cache.budget // 4:
             self.decoded_chunks.clear()
             self.decoded_used = 0
         cached, missing, keys = {}, [], {}
-        for group in sorted(groups):
+        for group_value in group_ids:
+            group = int(group_value)
             first, last = group * width, min((group + 1) * width, frame_count)
             key = (trajectory, manifest['identity'], first, last)
             keys[group] = key
@@ -144,7 +154,8 @@ class ExperimentalProvider(runtime.DataProvider):
                 item = next(next_item, None)
                 if item is not None:
                     pending[item[0]] = pool.submit(decode, item)
-            for group, rows in sorted(groups.items()):
+            for index, group_value in enumerate(group_ids):
+                group = int(group_value)
                 if group in cached:
                     decoded = cached[group]
                 else:
@@ -163,8 +174,8 @@ class ExperimentalProvider(runtime.DataProvider):
                         self.decoded_chunks[keys[group]] = decoded
                         self.decoded_used += size
                 with runtime._stage(trace, 'coordinate_extract_copy'):
-                    destinations = np.fromiter((i for i, _ in rows), dtype=np.int64)
-                    local = np.fromiter((f - group * width for _, f in rows), dtype=np.int64)
+                    destinations = order[boundaries[index]:boundaries[index + 1]]
+                    local = requested[destinations] - group * width
                     output[0][destinations] = decoded[0][local][:, selected, :]
                     output[1][destinations] = decoded[1][local]
                     output[2][destinations] = decoded[2][local]
