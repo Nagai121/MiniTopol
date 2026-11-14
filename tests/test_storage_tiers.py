@@ -9,6 +9,16 @@ from minitopol import Workspace, convert
 from minitopol.storage_tiers import TieredStorage, logical_path, migrate_workspace
 
 
+# Test files live on one tmp filesystem, unlike an actual external HDD.
+# Patch only the device probe; test_external_mount_guard restores the real one.
+_ORIGINAL_DEVICE_PROBE = TieredStorage._require_external_device
+
+
+@pytest.fixture(autouse=True)
+def _test_external_storage_device(monkeypatch):
+    monkeypatch.setattr(TieredStorage, "_require_external_device", lambda self, path: None)
+
+
 def _data(root, name="trajectory-one", contents=b"position data"):
     path = root / "trajectories" / name / "A.zarr" / "positions"
     path.mkdir(parents=True, exist_ok=True)
@@ -523,3 +533,38 @@ def test_concurrent_soft_limit_admission_is_serialized(tmp_path, monkeypatch):
         assert two.result(timeout=30)["relative"] == "trajectories/second"
     assert peak == 1
     assert storage.status()["temporary_cache_bytes"] <= 110
+
+
+def test_linux_unmounted_external_directory_is_rejected(tmp_path, monkeypatch):
+    import sys
+    if not sys.platform.startswith("linux"):
+        pytest.skip("st_dev external mount protection is Linux-specific")
+    monkeypatch.setattr(TieredStorage, "_require_external_device", _ORIGINAL_DEVICE_PROBE)
+    local = tmp_path / "internal"
+    _data(local)
+    mountpoint = tmp_path / "usb-unmounted"
+    mountpoint.mkdir()
+    storage = TieredStorage(local)
+    with pytest.raises(RuntimeError, match="separately mounted"):
+        storage.configure(external_root=mountpoint, enabled=True)
+    # Do not create a "MiniTopol Storage" folder on the internal device.
+    assert not (mountpoint / "MiniTopol Storage").exists()
+    assert storage.settings()["external_root"] is None
+
+
+def test_linux_external_identity_checked_again_if_drive_disappears(tmp_path, monkeypatch):
+    import sys
+    if not sys.platform.startswith("linux"):
+        pytest.skip("st_dev external mount protection is Linux-specific")
+    local = tmp_path / "internal"
+    _data(local)
+    mountpoint = tmp_path / "usb"
+    mountpoint.mkdir()
+    storage = TieredStorage(local)
+    storage.configure(external_root=mountpoint, enabled=True)
+    # Simulate a previously mounted drive now returning to its internal-disk
+    # mountpoint. The folder and identity are still present.
+    monkeypatch.setattr(TieredStorage, "_require_external_device", _ORIGINAL_DEVICE_PROBE)
+    with pytest.raises(RuntimeError, match="separately mounted"):
+        storage.offload("trajectories/trajectory-one")
+    assert (local / "trajectories/trajectory-one/A.zarr/positions/0").exists()
