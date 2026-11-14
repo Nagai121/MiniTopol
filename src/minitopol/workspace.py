@@ -211,7 +211,21 @@ class Workspace:
                     self._tier_access = TieredStorage(self.path)
         record = self._tier_access._object(object_name)
         if record is not None and record[0] == "external":
-            external = self._tier_access._direct_external(object_name, record)
+            try:
+                external = self._tier_access._direct_external(object_name, record)
+            except (FileNotFoundError, RuntimeError):
+                # If an external drive is unplugged, keep serving a verified
+                # local replica. No eviction can discard it without first
+                # verifying the missing external primary again.
+                from .storage_tiers import _tree_digest
+                local_root = self.path / object_name
+                if not local_root.exists():
+                    raise
+                digest, size = _tree_digest(local_root)
+                if digest != record[1] or size != record[2]:
+                    raise IOError(
+                        f"Local fallback differs from verified primary: {object_name}")
+                return local_root / path.relative_to(PurePosixPath(object_name))
             return external / path.relative_to(PurePosixPath(object_name))
         return self.path / str(path)
 
