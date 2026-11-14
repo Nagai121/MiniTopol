@@ -223,6 +223,15 @@ class Workspace:
         """Return the readable internal or verified external trajectory path."""
         return self.resolve_path("trajectories/" + identifier(trajectory))
 
+    def readonly_overrides(self, trajectory):
+        """Paths for lightweight scientific read-only Workspace adapters."""
+        overrides = self.storage_read_overrides()
+        name = identifier(trajectory)
+        external = self.read_trajectory_path(name)
+        if external != self.trajectory_path(name):
+            overrides["trajectories/" + name] = external
+        return overrides
+
     def list_trajectories(self):
         with self.catalog() as con:
             return con.execute("SELECT id, frames, atoms FROM trajectories ORDER BY id").fetchall()
