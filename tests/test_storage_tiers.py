@@ -9,6 +9,16 @@ from minitopol import Workspace, convert
 from minitopol.storage_tiers import TieredStorage, logical_path, migrate_workspace
 
 
+# Test files live on one tmp filesystem, unlike an actual external HDD.
+# Patch only the device probe; test_external_mount_guard restores the real one.
+_ORIGINAL_DEVICE_PROBE = TieredStorage._require_external_device
+
+
+@pytest.fixture(autouse=True)
+def _test_external_storage_device(monkeypatch):
+    monkeypatch.setattr(TieredStorage, "_require_external_device", lambda self, path: None)
+
+
 def _data(root, name="trajectory-one", contents=b"position data"):
     path = root / "trajectories" / name / "A.zarr" / "positions"
     path.mkdir(parents=True, exist_ok=True)
@@ -339,6 +349,7 @@ def test_oversize_ramachandran_recipe_and_trajectory(tmp_path, trajectory):
     tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"])
     report = analyze(ws, tid, descriptors=["ramachandran"], coordinate_mode="nonperiodic")
     assert report["status"] == "complete"
+    expected = ws.query_results(descriptor="ramachandran", trajectory=tid)
     usb = tmp_path / "usb"
     usb.mkdir()
     storage = TieredStorage(ws.path)
@@ -347,6 +358,9 @@ def test_oversize_ramachandran_recipe_and_trajectory(tmp_path, trajectory):
     storage.offload("descriptors/ramachandran/" + tid)
     storage.prune(all_cache=True)
     storage.configure(cache_percent=1e-9)
+    # A direct Workspace query must regenerate the virtual Rama table from
+    # the published external A and descriptor without a Provider session.
+    assert ws.query_results(descriptor="ramachandran", trajectory=tid).equals(expected)
     provider = TieredProvider(ws.path, 16 * 1024**2)
     try:
         result = provider.get(
@@ -523,3 +537,157 @@ def test_concurrent_soft_limit_admission_is_serialized(tmp_path, monkeypatch):
         assert two.result(timeout=30)["relative"] == "trajectories/second"
     assert peak == 1
     assert storage.status()["temporary_cache_bytes"] <= 110
+
+
+def test_linux_unmounted_external_directory_is_rejected(tmp_path, monkeypatch):
+    import sys
+    if not sys.platform.startswith("linux"):
+        pytest.skip("st_dev external mount protection is Linux-specific")
+    monkeypatch.setattr(TieredStorage, "_require_external_device", _ORIGINAL_DEVICE_PROBE)
+    local = tmp_path / "internal"
+    _data(local)
+    mountpoint = tmp_path / "usb-unmounted"
+    mountpoint.mkdir()
+    storage = TieredStorage(local)
+    with pytest.raises(RuntimeError, match="separately mounted"):
+        storage.configure(external_root=mountpoint, enabled=True)
+    # Do not create a "MiniTopol Storage" folder on the internal device.
+    assert not (mountpoint / "MiniTopol Storage").exists()
+    assert storage.settings()["external_root"] is None
+
+
+def test_linux_external_identity_checked_again_if_drive_disappears(tmp_path, monkeypatch):
+    import sys
+    if not sys.platform.startswith("linux"):
+        pytest.skip("st_dev external mount protection is Linux-specific")
+    local = tmp_path / "internal"
+    _data(local)
+    mountpoint = tmp_path / "usb"
+    mountpoint.mkdir()
+    storage = TieredStorage(local)
+    storage.configure(external_root=mountpoint, enabled=True)
+    # Simulate a previously mounted drive now returning to its internal-disk
+    # mountpoint. The folder and identity are still present.
+    monkeypatch.setattr(TieredStorage, "_require_external_device", _ORIGINAL_DEVICE_PROBE)
+    with pytest.raises(RuntimeError, match="separately mounted"):
+        storage.offload("trajectories/trajectory-one")
+    assert (local / "trajectories/trajectory-one/A.zarr/positions/0").exists()
+
+
+def test_direct_registry_workspace_queries_after_external_offload(tmp_path, trajectory):
+    import numpy as np
+    import pyarrow as pa
+    from minitopol import Registry
+    from minitopol.bond_store import BondStore
+    from minitopol.descriptors import DescriptorDefinition, ResultStore
+
+    ws = Workspace(tmp_path / "internal")
+    tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"],
+                  chunk_frames=3)
+    registry = Registry(ws)
+    reference_manifest = registry.manifest(tid)
+    reference_atoms = registry.atoms(tid)
+    baseline = list(registry.blocks(tid))
+    definition = DescriptorDefinition("sample", "1", "A", "test", "unit")
+    ResultStore(ws).publish(
+        tid, definition, 0, reference_manifest["frames"],
+        pa.table({"frame": [0, 2, 4], "value": [1.0, 2.0, 3.0]}))
+    reference_table = ws.query_results(descriptor="sample", trajectory=tid)
+    BondStore(ws).publish(tid, [(0, 1)], tpr_sha256="a" * 64,
+                          mapping_sha256="b" * 64)
+    expected_bonds = BondStore(ws).get(tid)
+
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(ws.path)
+    storage.configure(external_root=usb, enabled=True)
+    storage.offload("trajectories/" + tid)
+    storage.offload("descriptors/sample/" + tid)
+    storage.prune(all_cache=True)
+    assert not (ws.path / "trajectories" / tid).exists()
+    assert not (ws.path / "descriptors" / "sample" / tid).exists()
+
+    # No Provider and no explicit storage_read_scope.
+    assert registry.manifest(tid) == reference_manifest
+    assert registry.atoms(tid).equals(reference_atoms)
+    after = list(registry.blocks(tid))
+    assert len(after) == len(baseline)
+    for before, actual in zip(baseline, after):
+        np.testing.assert_array_equal(actual.positions, before.positions)
+        np.testing.assert_array_equal(actual.time, before.time)
+        np.testing.assert_array_equal(actual.box, before.box)
+    assert ws.query_results(descriptor="sample", trajectory=tid).equals(reference_table)
+    assert BondStore(ws).get(tid).equals(expected_bonds)
+    # Direct access must not implicitly re-stage the data onto the SSD.
+    assert not (ws.path / "trajectories" / tid).exists()
+
+
+def test_direct_external_read_rejects_corrupt_primary(tmp_path, trajectory):
+    from minitopol import Registry
+    ws = Workspace(tmp_path / "internal")
+    tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"])
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(ws.path)
+    storage.configure(external_root=usb, enabled=True)
+    storage.offload("trajectories/" + tid)
+    storage.prune(all_cache=True)
+    external = usb / "MiniTopol Storage" / "trajectories" / tid / "manifest.json"
+    external.write_text("corrupted", encoding="utf-8")
+    with pytest.raises(IOError, match="External primary differs"):
+        Registry(ws).manifest(tid)
+
+
+def test_numpy_chunk_grouping_keeps_order_and_duplicate_frames(tmp_path, trajectory):
+    import numpy as np
+    from minitopol import Registry
+    from minitopol.provider.tiered import TieredProvider
+
+    ws = Workspace(tmp_path / "internal")
+    tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"],
+                  chunk_frames=3)
+    registry = Registry(ws)
+    baseline = list(registry.blocks(tid))
+    coordinates = np.concatenate([block.positions for block in baseline], axis=0)
+    times = np.concatenate([block.time for block in baseline])
+    boxes = np.concatenate([block.box for block in baseline], axis=0)
+    chosen = [8, 0, 4, 8, 2, 1, 0]
+    selected = [0, 1]
+    provider = TieredProvider(ws.path, 16 * 1024**2)
+    try:
+        manifest = registry.manifest(tid)
+        output = provider._load_coordinates(
+            tid, chosen, selected, manifest["frames"], manifest)
+        np.testing.assert_array_equal(output[0], coordinates[chosen][:, selected])
+        np.testing.assert_array_equal(output[1], times[chosen])
+        np.testing.assert_array_equal(output[2], boxes[chosen])
+        # Repeat to cover the decoded-chunk cache-hit path.
+        again = provider._load_coordinates(
+            tid, chosen, selected, manifest["frames"], manifest)
+        for actual, expected in zip(again, output):
+            np.testing.assert_array_equal(actual, expected)
+        # Check the actively used parallel decode implementation as well.
+        parallel = provider._parallel_coordinates(
+            tid, chosen, selected, manifest["frames"], manifest)
+        for actual, expected in zip(parallel, output):
+            np.testing.assert_array_equal(actual, expected)
+    finally:
+        provider.close()
+
+
+def test_direct_registry_can_use_verified_local_copy_when_drive_unmounted(tmp_path, trajectory):
+    from minitopol import Registry
+    ws = Workspace(tmp_path / "internal")
+    tid = convert(ws, trajectory[0], trajectory[1], solvent_resnames=["SOL"])
+    manifest = Registry(ws).manifest(tid)
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(ws.path)
+    storage.configure(external_root=usb, enabled=True)
+    storage.offload("trajectories/" + tid)
+    # A verified internal replica still exists after offload.
+    shutil.rmtree(usb)
+    assert Registry(ws).manifest(tid) == manifest
+    (ws.path / "trajectories" / tid / "manifest.json").write_text("broken")
+    with pytest.raises(IOError, match="Local fallback differs"):
+        Registry(ws).manifest(tid)

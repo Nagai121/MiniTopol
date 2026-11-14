@@ -285,9 +285,18 @@ class DataProvider:
                 source["positions"], source["time"], source["box"])
             chunk_size = int(position_array.chunks[0])
         with _stage(trace, "chunk_grouping"):
-            groups = {}
-            for output_index, frame in enumerate(frames):
-                groups.setdefault(frame // chunk_size, []).append((output_index, frame))
+            # Frame-to-chunk grouping runs as native NumPy sort/diff, avoiding
+            # a Python dictionary append per requested atom-frame. Stable
+            # ordering keeps duplicate and out-of-order frame requests intact.
+            requested = np.asarray(frames, dtype=np.int64)
+            chunk_ids = requested // chunk_size
+            permutation = np.argsort(chunk_ids, kind="stable")
+            ordered_chunks = chunk_ids[permutation]
+            boundaries = np.concatenate((
+                np.array([0], dtype=np.int64),
+                np.flatnonzero(np.diff(ordered_chunks)) + 1,
+                np.array([len(frames)], dtype=np.int64),
+            ))
 
         # Cache.request owns its reentrant lock while calling this builder;
         # the decoded-chunk LRU therefore has serialized mutations.
@@ -295,8 +304,9 @@ class DataProvider:
             self.decoded_chunks.clear()
             self.decoded_used = 0
 
-        for group_number, request_rows in sorted(groups.items()):
-            first = group_number * chunk_size
+        for begin, end in zip(boundaries[:-1], boundaries[1:]):
+            destinations = permutation[begin:end]
+            first = int(ordered_chunks[begin]) * chunk_size
             last = min(first + chunk_size, frame_count)
             key = (trajectory, manifest["identity"], first, last)
             cached = self.decoded_chunks.get(key)
@@ -322,9 +332,7 @@ class DataProvider:
 
             with _stage(trace, "coordinate_extract_copy"):
                 chunk_positions, chunk_time, chunk_box = decoded
-                destinations = np.fromiter((i for i, _ in request_rows), dtype=np.int64)
-                local_frames = np.fromiter((frame - first for _, frame in request_rows),
-                                           dtype=np.int64)
+                local_frames = requested[destinations] - first
                 out_positions[destinations] = chunk_positions[local_frames][:, selected, :]
                 out_time[destinations] = chunk_time[local_frames]
                 out_box[destinations] = chunk_box[local_frames]

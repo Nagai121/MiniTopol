@@ -19,15 +19,19 @@ class BondStore:
     def __init__(self, workspace):
         self.workspace = workspace
 
-    def _paths(self, trajectory):
-        directory = self.workspace.trajectory_path(trajectory)
+    def _paths(self, trajectory, *, read=False):
+        if read:
+            resolve = getattr(self.workspace, "read_trajectory_path", None)
+            directory = resolve(trajectory) if resolve is not None else self.workspace.trajectory_path(trajectory)
+        else:
+            directory = self.workspace.trajectory_path(trajectory)
         return directory / "bonds.parquet", directory / "bonds.json"
 
     def _verify(self, trajectory, record):
         manifest = Registry(self.workspace).manifest(trajectory)
         if record.get("schema") != 1 or record["a_identity"] != manifest["identity"]:
             raise IOError("Bond record does not match the completed A trajectory")
-        data, _ = self._paths(trajectory)
+        data, _ = self._paths(trajectory, read=True)
         if not data.is_file() or fingerprint(data)["sha256"] != record["sha256"]:
             raise IOError("Bond data missing or checksum mismatch")
         table = pq.read_table(data)
@@ -35,10 +39,14 @@ class BondStore:
             or table.schema.types != [pa.int64(), pa.int64()]
             or table.num_rows != record["edges"]):
             raise IOError("Bond graph schema or edge count mismatch")
-        endpoints = table.to_pydict()
-        edges = list(zip(endpoints["point_i"], endpoints["point_j"]))
-        if (any(not 0 <= x < y < manifest["atoms"] for x, y in edges)
-            or edges != sorted(set(edges))):
+        # Avoid converting large bond columns into Python tuples/sets.
+        # Arrow -> NumPy views and native vector comparisons preserve the
+        # strict 0 <= i < j < atoms and unique lexicographic order contract.
+        left = table["point_i"].to_numpy(zero_copy_only=False)
+        right = table["point_j"].to_numpy(zero_copy_only=False)
+        if (not ((left >= 0) & (left < right) & (right < manifest["atoms"])).all()
+                or not ((left[1:] > left[:-1])
+                        | ((left[1:] == left[:-1]) & (right[1:] > right[:-1]))).all()):
             raise IOError("Bond graph indices are invalid or unordered")
         return table
 
@@ -95,7 +103,7 @@ class BondStore:
         return len(edge_list)
 
     def get(self, trajectory):
-        data, marker = self._paths(trajectory)
+        data, marker = self._paths(trajectory, read=True)
         if not marker.is_file():
             raise LookupError("No completed bond graph for this trajectory")
         with self.workspace.lock("trajectory-bonds-" + trajectory):
@@ -105,7 +113,7 @@ class BondStore:
             return table
 
     def info(self, trajectory):
-        _, marker = self._paths(trajectory)
+        _, marker = self._paths(trajectory, read=True)
         if not marker.is_file():
             return None
         with self.workspace.lock("trajectory-bonds-" + trajectory):

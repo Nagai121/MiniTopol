@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sqlite3
+import sys
 import threading
 import time
 from uuid import uuid4
@@ -166,6 +167,19 @@ class TieredStorage:
             return {name: json.loads(value) for name, value in
                     db.execute("SELECT name, value FROM tier_settings")}
 
+    def _require_external_device(self, path):
+        """Refuse an unmounted Linux drive path on the internal filesystem.
+
+        A directory and a marker on the internal disk are not evidence of
+        a mounted removable drive. A different st_dev is required on Linux;
+        mount-point detection by name alone is insufficient (nested mounts).
+        """
+        if sys.platform.startswith("linux"):
+            if os.stat(path).st_dev == os.stat(self.root).st_dev:
+                raise RuntimeError(
+                    f"External MiniTopol Storage is not on a separately mounted "
+                    f"filesystem: {path}")
+
     def _external_root(self, config=None):
         config = config or self.settings()
         value = config.get("external_root")
@@ -177,6 +191,7 @@ class TieredStorage:
             raise ValueError("External storage overlaps internal MiniTopol Storage")
         if not root.is_dir() or not marker.is_file():
             raise FileNotFoundError(f"Registered external MiniTopol Storage is unavailable: {root}")
+        self._require_external_device(root)
         if marker.read_text(encoding="utf-8").strip() != config["external_identity"]:
             raise RuntimeError("External storage identity differs; refusing another device")
         return root
@@ -201,6 +216,10 @@ class TieredStorage:
                 if root == self.root or root in self.root.parents or self.root in root.parents:
                     raise ValueError(
                         "External storage must not overlap the internal MiniTopol Storage")
+                # Check the actual backing filesystem before creating a marker,
+                # folder, or copy. In particular /media/usb may exist on the
+                # internal disk while the USB drive is disconnected.
+                self._require_external_device(root if root.is_dir() else root.parent)
                 previous = current["external_root"]
                 if previous is not None and str(root) != previous:
                     with self._db() as db:
@@ -391,9 +410,9 @@ class TieredStorage:
 
     def offload(self, relative):
         relative = logical_path(relative)
-        config = self.settings()
-        external = self._external_root(config)
         with self._state_lock, self._lock(relative):
+            config = self.settings()
+            external = self._external_root(config)
             internal_path = self._safe_path(self.root, relative)
             external_path = self._safe_path(external, relative)
             if not internal_path.exists():
