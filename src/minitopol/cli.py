@@ -39,6 +39,8 @@ def main(argv=None):
                            help="Additional burst allowance in GiB; default 0")
     configure.add_argument("--prefetch-batches", type=int)
     configure.add_argument("--write-policy", choices=["longevity", "balanced", "throughput"])
+    configure.add_argument("--atlas-source-tier", choices=["internal", "external"],
+                           help="Store newly downloaded ATLAS raw inputs on internal SSD or external HDD")
     ingest = storage_commands.add_parser("ingest")
     ingest.add_argument("trajectory", help="Adopt original topology and XTC into sources/manual")
     offload = storage_commands.add_parser("offload")
@@ -152,7 +154,8 @@ def main(argv=None):
                 cache_slack_percent=args.cache_slack_percent,
                 cache_slack_bytes=(round(args.cache_slack_gib * 1024**3)
                                    if args.cache_slack_gib is not None else None),
-                prefetch_batches=args.prefetch_batches, write_policy=args.write_policy)
+                prefetch_batches=args.prefetch_batches, write_policy=args.write_policy,
+                atlas_source_tier=args.atlas_source_tier)
         elif args.storage_action == "offload":
             result = manager.offload(args.relative)
         elif args.storage_action == "ingest":
