@@ -15,7 +15,7 @@ from MDAnalysis.coordinates.XTC import XTCReader
 
 from .client import _dataset_id, _kind, _sha256, _crc32
 from .ledger import DownloadLedger
-from .paths import source_directory
+from .paths import source_directory, archive_reference
 
 _REPLICA = re.compile(r"(?:^|[_.-])R([1-9][0-9]*)(?=$|[_.-])", re.IGNORECASE)
 _SUFFIXES = {".gro", ".pdb", ".tpr", ".xtc"}
@@ -101,7 +101,7 @@ def _verify_acquisition(workspace, dataset: str, kind: str, files: list[Path]) -
             raise ValueError("Untracked ATLAS archive cannot authenticate extracted inputs")
         return "manual"
     if (record["status"] != "complete"
-            or record["archive"] != archive.relative_to(workspace.path).as_posix()
+            or record["archive"] != archive_reference(workspace, dataset, kind, directory)
             or not archive.is_file() or archive.is_symlink()
             or int(record["bytes"]) != archive.stat().st_size
             or record["sha256"] != _sha256(archive)):
