@@ -20,8 +20,11 @@ class BondStore:
         self.workspace = workspace
 
     def _paths(self, trajectory, *, read=False):
-        directory = (self.workspace.read_trajectory_path(trajectory) if read
-                     else self.workspace.trajectory_path(trajectory))
+        if read:
+            resolve = getattr(self.workspace, "read_trajectory_path", None)
+            directory = resolve(trajectory) if resolve is not None else self.workspace.trajectory_path(trajectory)
+        else:
+            directory = self.workspace.trajectory_path(trajectory)
         return directory / "bonds.parquet", directory / "bonds.json"
 
     def _verify(self, trajectory, record):
