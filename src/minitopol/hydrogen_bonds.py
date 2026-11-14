@@ -383,7 +383,9 @@ class HydrogenBondStore:
 
 def hydrogen_bond_info(workspace, trajectory):
     """Read and verify an independently completed hydrogen-bond dataset."""
-    directory = workspace.read_trajectory_path(trajectory) / "hydrogen_bonds"
+    resolve = getattr(workspace, "read_trajectory_path", None)
+    directory = (resolve(trajectory) if resolve is not None
+                 else workspace.trajectory_path(trajectory)) / "hydrogen_bonds"
     path = directory / "manifest.json"
     if not path.is_file():
         return None
@@ -427,7 +429,9 @@ def hydrogen_bond_events(workspace, trajectory, category, *,
     last = info["frames"] if stop is None else stop
     if type(start) is not int or type(last) is not int or not 0 <= start <= last <= info["frames"]:
         raise ValueError("Invalid hydrogen-bond frame selection")
-    directory = workspace.read_trajectory_path(trajectory) / "hydrogen_bonds"
+    resolve = getattr(workspace, "read_trajectory_path", None)
+    directory = (resolve(trajectory) if resolve is not None
+                 else workspace.trajectory_path(trajectory)) / "hydrogen_bonds"
     record = read_json(directory / "manifest.json")
     paths = [str(directory / p["categories"][category]["path"])
              for p in record["parts"] if p["start"] < last and p["stop"] > start]
