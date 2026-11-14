@@ -46,8 +46,41 @@ minitopol storage configure --cache-percent 10 --write-policy longevity --prefet
 
 内部補助の一時キャッシュ容量は、Provider起動時に得た使用可能容量の初期10%です。
 内部補助に正本として配置されたデータはこの枠に含めません。
-`--cache-percent` で割合を変更できます。設定変更時も起動時の容量基準を
-維持し、Provider再起動で容量を再評価します。
+`--cache-percent` は10%超（最大100%）も指定できます。
+`--cache-limit-gib` でGiB単位の絶対容量を指定すると、割合指定ではなく固定容量が
+目標になります。どちらかを変更すれば、その方式に切り替わります。相対方式の
+起動時容量基準は、設定変更時に再計算せず、Provider再起動時に再評価します。
+
+容量は**軟制限**です。初期状態では、目標容量の10%ぶんを追加の許容量として認めます
+（`--cache-slack-percent`）。さらに`--cache-slack-gib`でGiB単位の許容量を
+加算できます。いずれも設定可能で、0にするとその許容量は無効です。
+
+- **目標容量**：割合指定または絶対容量で決めた通常の一時配置枠
+- **軟制限の許容上限**：目標容量＋指定された超過許容量
+- **実際のコピー可否**：その時点の空き容量を別途確認し、コピー時の追加容量を確保
+- **許容上限を超える場合**：データ削除で調整できなければ外部正本を直接読み出す
+
+転送のピーク容量や、起動時と利用時の空き容量の差を考慮した仕様です。
+容量を超過しても科学データの正本は削除されません。絶対容量指定も物理ディスクの
+空き容量を保証するものではありません。コピー用の最低余裕が不足した場合は
+外部直接読み出しへ切り替えます。
+
+設定例：
+
+```bash
+# 空き容量の40%を目標（初期10%を上回る値）
+minitopol storage configure --cache-percent 40
+
+# 内部一時配置の目標を絶対2 GiB、追加許容25%＋0.5 GiBとする
+minitopol storage configure --cache-limit-gib 2 --cache-slack-percent 25 --cache-slack-gib 0.5
+
+# 厳密な容量比較を行う実験設定（超過許容なし）
+minitopol storage configure --cache-limit-gib 2 --cache-slack-percent 0 --cache-slack-gib 0
+```
+
+`storage status` では`temporary_cache_mode`、`temporary_cache_limit_bytes`、
+`temporary_cache_soft_limit_bytes`、`available_at_start_bytes`、
+`available_now_bytes`を確認できます。
 
 書き込み抑制を重視し、既存の検証済みコピーを再利用して不要な再転送を避けます。
 `storage status` では内部補助への累計転送回数・書き込み量
@@ -83,7 +116,7 @@ Providerの通常の `get` は必要な管理対象が外部正本なら
 プリフェッチ・オフロードしただけでは科学データの内容は変更しません。
 1つの論理単位がキャッシュ枠を超える場合は、検証済みの外部正本を
 Providerが読み取り専用で直接参照します。SSDへの全量コピーは行わず、
-内部補助の容量上限を超えません。複数の一時データが同時に必要で
+内部補助の設定された軟制限を超えた全量転送を避けます。複数の一時データが同時に必要で
 上限内に収まらない場合も、外部直接読み出しへ切り替えます。
 内部への通常の復元と同じ科学データ形式・Provider応答を使用します。
 
