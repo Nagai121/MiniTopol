@@ -12,6 +12,7 @@ import duckdb
 from filelock import FileLock
 
 from .storage import digest, identifier
+from .windows_paths import filesystem_path
 
 
 _query_session_local = threading.local()
@@ -22,7 +23,9 @@ class Workspace:
         requested = path if path is not None else os.environ.get("MINITOPOL_WORKSPACE")
         record = Path.home() / ".minitopol" / "storage-location.json"
         registered = requested is None and record.is_file()
-        self.path = Path(requested if requested is not None else self.default_path()).resolve()
+        self.path = filesystem_path(
+            Path(requested if requested is not None else self.default_path()).expanduser(),
+            threshold=160).resolve()
         self._write_nesting = threading.local()
         self._tier_access_lock = threading.Lock()
         self._tier_access = None
