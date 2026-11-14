@@ -19,7 +19,7 @@ import stat
 import zlib
 
 from .ledger import DownloadLedger
-from .paths import source_directory
+from .paths import source_directory, archive_reference
 
 BASE_URL = "https://www.dsimb.inserm.fr/ATLAS/api"
 DATASET = re.compile(r"[A-Za-z0-9]{4}_[A-Za-z0-9]")
@@ -175,7 +175,7 @@ class AtlasClient:
         trajectory_id = f"atlas-{dataset}-{kind}"
         directory = source_directory(workspace, dataset, kind)
         archive = directory / f"{dataset}_{kind}.zip"
-        relative = archive.relative_to(workspace.path).as_posix()
+        relative = archive_reference(workspace, dataset, kind, directory)
         ledger = DownloadLedger(workspace)
         with workspace.lock(f"atlas-download-{trajectory_id}"):
             directory.mkdir(parents=True, exist_ok=True)
