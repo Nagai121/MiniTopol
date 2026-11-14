@@ -406,8 +406,9 @@ def test_soft_cache_absolute_budget_and_percentage_switch(tmp_path):
     assert updated["temporary_cache_limit_bytes"] == int(
         manager.available_at_start * 0.60
     )
-    assert updated["temporary_cache_soft_limit_bytes"] == int(
-        updated["temporary_cache_limit_bytes"] * 1.20
+    assert updated["temporary_cache_soft_limit_bytes"] == (
+        updated["temporary_cache_limit_bytes"] +
+        int(updated["temporary_cache_limit_bytes"] * 20 / 100.0)
     )
 
 
