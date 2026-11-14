@@ -21,7 +21,7 @@ class TieredProvider(OptimizedProvider):
     def configure_storage(self, request):
         allowed = {"enabled", "external_root", "cache_percent", "cache_limit_bytes",
                    "cache_slack_percent", "cache_slack_bytes", "write_policy",
-                   "prefetch_batches"}
+                   "prefetch_batches", "atlas_source_tier"}
         if not isinstance(request, dict) or set(request) - allowed:
             raise ValueError("Invalid storage configuration")
         return self.tiers.configure(**request)

@@ -273,3 +273,27 @@ def test_system_extraction_failure_is_partial_not_complete(tmp_path, trajectory,
     assert report["replicas"][0]["bonds"] == "complete"
     assert report["replicas"][0]["system"] == "failed"
     assert "unsupported TPR" in report["replicas"][0]["system_error"]
+
+
+def test_external_atlas_raw_sources_convert_to_internal_ssd(tmp_path, trajectory, monkeypatch):
+    from minitopol.storage_tiers import TieredStorage
+    from minitopol.atlas.paths import source_directory
+    monkeypatch.setattr(TieredStorage, "_require_external_device",
+                        lambda self, path: None)
+    workspace = Workspace(tmp_path / "ssd")
+    external = tmp_path / "hdd"
+    external.mkdir()
+    manager = TieredStorage(workspace.path)
+    manager.configure(external_root=external, atlas_source_tier="external")
+    directory = source_directory(workspace, "1k5n_A", "analysis")
+    directory.mkdir(parents=True)
+    shutil.copyfile(trajectory[0], directory / "1k5n_A_R1.gro")
+    shutil.copyfile(trajectory[1], directory / "1k5n_A_R1.xtc")
+    assert check_atlas(workspace, "1k5n_A")[0]["replica"] == "R1"
+    result = import_atlas(workspace, "1k5n_A")
+    assert result["status"] == "complete"
+    tid = result["replicas"][0]["trajectory_id"]
+    assert (workspace.path / "trajectories" / tid / "A.zarr").is_dir()
+    assert Registry(workspace).manifest(tid)["atoms"] == 2
+    assert not (workspace.path / "sources" / "ATLAS" / "1k5n_A-analysis").exists()
+    assert (directory / "1k5n_A_R1.xtc").is_file()

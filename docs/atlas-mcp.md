@@ -23,6 +23,31 @@ print(DownloadLedger(workspace).list())
 
 Archive is stored under
 `MiniTopol Storage/sources/ATLAS/1k5n_A-analysis/1k5n_A_analysis.zip`.
+
+### External raw ATLAS downloads, internal converted data
+
+To send only **new ATLAS ZIP/TPR/XTC/PDB downloads** to an external
+drive while keeping converted A trajectories, descriptors and DuckDB on the
+internal SSD, configure:
+
+```sh
+python -m minitopol storage configure --external /media/external --atlas-source-tier external
+```
+
+On Windows, replace `/media/external` with the drive location (for example
+`E:\\`). `atlas_source_tier` defaults to `internal`. This is independent
+of the Provider's multi-tier cache enable switch. The registered external
+drive is checked before each new acquisition, validation and import; when
+disconnected, existing external raw inputs fail closed instead of being
+accidentally recreated under the SSD's `sources/` directory.
+
+The existing nine-column `downloads.tsv` ledger remains **on the internal
+SSD**. Newly downloaded external archives are recorded as
+`external:sources/ATLAS/.../dataset_kind.zip`, so switching the default tier
+does not break previously downloaded datasets. Already downloaded inputs are
+not relocated automatically; their original placement remains authoritative.
+Conversion outputs always stay in the internal Workspace.
+
 By default, only *.xtc, *.pdb, *.tpr, *.gro members are extracted beside
 the ZIP, without trusting ZIP member paths. Use `extract=False` to retain only
 the archive. An archive with a matching ledger entry is rechecked before reuse;

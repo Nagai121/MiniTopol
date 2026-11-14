@@ -122,6 +122,7 @@ def migrate_atlas_sources(workspace):
     retry reconciles those states, and never drops unrelated/new ledger rows.
     """
     from .client import _sha256, _dataset_id, _kind
+    from .paths import _external_source_root
     root = workspace.path / "sources" / "ATLAS"
     modern_ledger = root / "downloads.tsv"
     legacy_ledger = workspace.path / "atlas" / "downloads.tsv"
@@ -141,7 +142,9 @@ def migrate_atlas_sources(workspace):
                             / "source" / f"{dataset}_{kind}.zip")
                 new_path = root / f"{dataset}-{kind}" / f"{dataset}_{kind}.zip"
                 allowed = {old_path.relative_to(workspace.path).as_posix(),
-                           new_path.relative_to(workspace.path).as_posix()}
+                           new_path.relative_to(workspace.path).as_posix(),
+                           "external:sources/ATLAS/"
+                           + f"{dataset}-{kind}/{dataset}_{kind}.zip"}
                 if row["archive"] not in allowed:
                     raise ValueError("Unexpected archive location in ATLAS ledger")
                 key = dataset, kind
@@ -172,6 +175,24 @@ def migrate_atlas_sources(workspace):
                 filename = f"{dataset}_{kind}.zip"
                 old_rel = (old_dir / filename).relative_to(workspace.path).as_posix()
                 new_rel = (new_dir / filename).relative_to(workspace.path).as_posix()
+                external_rel = f"external:sources/ATLAS/{dataset}-{kind}/{filename}"
+                if row["archive"] == external_rel:
+                    # Already-registered external sources are not part of the
+                    # legacy internal migration; check provenance and retain.
+                    external = (_external_source_root(workspace) /
+                                "sources" / "ATLAS" / f"{dataset}-{kind}" / filename)
+                    if external.is_symlink() or (
+                            row["status"] == "complete" and not external.is_file()):
+                        raise FileNotFoundError("External ATLAS archive unavailable: " + str(external))
+                    if external.exists():
+                        if not external.is_file():
+                            raise ValueError("External ATLAS archive is not a regular file")
+                        if row["bytes"] and external.stat().st_size != int(row["bytes"]):
+                            raise ValueError("External ATLAS archive size mismatch")
+                        if row["sha256"] and _sha256(external) != row["sha256"]:
+                            raise ValueError("External ATLAS archive checksum mismatch")
+                    rewritten.append(dict(row))
+                    continue
                 if row["archive"] not in (old_rel, new_rel):
                     raise ValueError("Unexpected archive location in ledger: " + row["archive"])
                 if old_dir.is_symlink() or new_dir.is_symlink():

@@ -19,7 +19,8 @@ import stat
 import zlib
 
 from .ledger import DownloadLedger
-from .paths import source_directory
+from .paths import source_directory, archive_reference
+from ..windows_paths import filesystem_path
 
 BASE_URL = "https://www.dsimb.inserm.fr/ATLAS/api"
 DATASET = re.compile(r"[A-Za-z0-9]{4}_[A-Za-z0-9]")
@@ -74,7 +75,7 @@ def _extract_inputs(archive: Path, target: Path) -> list[str]:
         if not any(name.lower().endswith(".xtc") for name in members):
             raise ValueError("ATLAS archive contains no XTC trajectory")
         for name, info in members.items():
-            dst = target / name
+            dst = filesystem_path(target / name)
             if dst.is_symlink():
                 raise FileExistsError(f"Extracted path must not be a symlink: {dst}")
             if dst.exists():
@@ -175,7 +176,7 @@ class AtlasClient:
         trajectory_id = f"atlas-{dataset}-{kind}"
         directory = source_directory(workspace, dataset, kind)
         archive = directory / f"{dataset}_{kind}.zip"
-        relative = archive.relative_to(workspace.path).as_posix()
+        relative = archive_reference(workspace, dataset, kind, directory)
         ledger = DownloadLedger(workspace)
         with workspace.lock(f"atlas-download-{trajectory_id}"):
             directory.mkdir(parents=True, exist_ok=True)

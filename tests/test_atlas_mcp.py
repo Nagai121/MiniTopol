@@ -229,3 +229,106 @@ def test_corruption_after_previous_success_is_not_silently_accepted(tmp_path):
         client.download(workspace, "1k5n_A")
     assert archive.read_bytes() == b"corrupted file"
     assert DownloadLedger(workspace).get("1k5n_A", "analysis")["status"] == "failed"
+
+
+def test_atlas_raw_external_storage_and_location_persistence(tmp_path, monkeypatch):
+    from minitopol.storage_tiers import TieredStorage
+    from minitopol.atlas.paths import source_directory
+    monkeypatch.setattr(TieredStorage, "_require_external_device",
+                        lambda self, path: None)
+    workspace = Workspace(tmp_path / "ssd")
+    external = tmp_path / "hdd"
+    external.mkdir()
+    manager = TieredStorage(workspace.path)
+    manager.configure(external_root=external, atlas_source_tier="external")
+    assert manager.status()["atlas_source_tier"] == "external"
+    from minitopol.provider.tiered import TieredProvider
+    provider = TieredProvider(workspace.path, 16 * 1024**2)
+    try:
+        assert provider.configure_storage(
+            {"atlas_source_tier": "external"})["atlas_source_tier"] == "external"
+    finally:
+        provider.close()
+    payload = archive_bytes()
+    client = AtlasClient(opener=lambda request, timeout: FakeResponse(payload))
+    acquired = client.download(workspace, "1k5n_A", extract=True)
+    archive = external / "MiniTopol Storage" / "sources" / "ATLAS" / (
+        "1k5n_A-analysis") / "1k5n_A_analysis.zip"
+    assert acquired["archive"] == str(archive)
+    assert archive.read_bytes() == payload
+    assert not (workspace.path / "sources" / "ATLAS" / "1k5n_A-analysis").exists()
+    record = DownloadLedger(workspace).get("1k5n_A", "analysis")
+    assert record["archive"] == (
+        "external:sources/ATLAS/1k5n_A-analysis/1k5n_A_analysis.zip")
+    assert (workspace.path / "sources" / "ATLAS" / "downloads.tsv").is_file()
+    assert source_directory(workspace, "1k5n_A", "analysis") == archive.parent
+    assert len(client.download(workspace, "1k5n_A")["files"]) == 2
+    from minitopol.atlas.ledger import migrate_atlas_sources
+    assert migrate_atlas_sources(workspace) == 0
+    assert archive.is_file()
+    manager.configure(atlas_source_tier="internal")
+    # The recorded placement outlives a change of default for new datasets.
+    assert source_directory(workspace, "1k5n_A", "analysis") == archive.parent
+    client_no_network = AtlasClient(opener=lambda request, timeout:
+                                    pytest.fail("must reuse existing archive"))
+    assert client_no_network.download(workspace, "1k5n_A")["status"] == "skipped"
+
+
+def test_atlas_external_sources_fail_closed_when_drive_missing(tmp_path, monkeypatch):
+    import shutil
+    from minitopol.storage_tiers import TieredStorage
+    monkeypatch.setattr(TieredStorage, "_require_external_device",
+                        lambda self, path: None)
+    workspace = Workspace(tmp_path / "ssd")
+    external = tmp_path / "hdd"
+    external.mkdir()
+    manager = TieredStorage(workspace.path)
+    manager.configure(external_root=external, atlas_source_tier="external")
+    client = AtlasClient(opener=lambda request, timeout: FakeResponse(archive_bytes()))
+    client.download(workspace, "1k5n_A")
+    shutil.rmtree(external)
+    with pytest.raises(FileNotFoundError):
+        client.download(workspace, "1k5n_A")
+    assert not (workspace.path / "sources" / "ATLAS" / "1k5n_A-analysis").exists()
+
+
+def test_atlas_enabling_external_does_not_move_existing_raw_data(tmp_path, monkeypatch):
+    from minitopol.storage_tiers import TieredStorage
+    from minitopol.atlas.paths import source_directory
+    monkeypatch.setattr(TieredStorage, "_require_external_device",
+                        lambda self, path: None)
+    workspace = Workspace(tmp_path / "ssd")
+    source = AtlasClient(opener=lambda request, timeout: FakeResponse(archive_bytes()))
+    first = source.download(workspace, "1k5n_A")
+    external = tmp_path / "hdd"
+    external.mkdir()
+    TieredStorage(workspace.path).configure(
+        external_root=external, atlas_source_tier="external")
+    assert source_directory(workspace, "1k5n_A", "analysis") == (
+        workspace.path / "sources" / "ATLAS" / "1k5n_A-analysis")
+    assert source.download(workspace, "1k5n_A")["status"] == "skipped"
+    assert first["archive"] == str(source_directory(
+        workspace, "1k5n_A", "analysis") / "1k5n_A_analysis.zip")
+
+
+def test_windows_extended_paths_include_local_and_unc():
+    from minitopol.windows_paths import windows_extended_string
+    assert windows_extended_string(r"C:\data\folder") == (
+        "\\\\?\\C:\\data\\folder")
+    assert windows_extended_string(r"\\server\share\data") == (
+        "\\\\?\\UNC\\server\\share\\data")
+    assert windows_extended_string(r"\\?\C:\data") == r"\\?\C:\data"
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="Windows filesystem only")
+def test_windows_long_atlas_workspace_and_extraction(tmp_path):
+    from minitopol.windows_paths import filesystem_path
+    deep = tmp_path.joinpath(*(["deep_folder_123456789"] * 12), "workspace")
+    workspace = Workspace(deep)
+    assert str(workspace.path).startswith("\\\\?\\")
+    acquired = AtlasClient(opener=lambda request, timeout:
+                           FakeResponse(archive_bytes())).download(workspace, "1k5n_A")
+    assert filesystem_path(acquired["archive"]).is_file()
+    assert len(acquired["files"]) == 2
+    assert AtlasClient(opener=lambda request, timeout: pytest.fail(
+        "reuse long archive")).download(workspace, "1k5n_A")["status"] == "skipped"

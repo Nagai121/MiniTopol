@@ -34,6 +34,8 @@
 minitopol init
 minitopol storage status
 minitopol storage configure --external /media/external --enable
+# ATLASの新規変換元ファイルのみ外部HDDへ、変換後はSSDのWorkspaceへ
+minitopol storage configure --atlas-source-tier external
 minitopol storage configure --cache-percent 10 --write-policy longevity --prefetch-batches 1
 ```
 

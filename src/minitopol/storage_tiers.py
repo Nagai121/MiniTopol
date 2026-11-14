@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+from .windows_paths import filesystem_path
 import re
 import shutil
 import sqlite3
@@ -137,6 +138,7 @@ class TieredStorage:
             db.execute("""CREATE TABLE IF NOT EXISTS tier_metrics (
                 name TEXT PRIMARY KEY, value INTEGER NOT NULL)""")
             for name, value in (("enabled", False), ("cache_percent", 10.0),
+                                ("atlas_source_tier", "internal"),
                                 ("cache_limit_bytes", None), ("cache_slack_percent", 10.0),
                                 ("cache_slack_bytes", 0),
                                 ("write_policy", "longevity"), ("prefetch_batches", 1),
@@ -198,12 +200,12 @@ class TieredStorage:
 
     def configure(self, *, enabled=None, external_root=None, cache_percent=None,
                   cache_limit_bytes=None, cache_slack_percent=None, cache_slack_bytes=None,
-                  write_policy=None, prefetch_batches=None):
+                  write_policy=None, prefetch_batches=None, atlas_source_tier=None):
         with self._state_lock, self._mutex:
             current = self.settings()
             changes = {}
             if external_root is not None:
-                root = Path(external_root).expanduser().resolve()
+                root = filesystem_path(Path(external_root).expanduser(), threshold=160).resolve()
                 if root == self.root or root in self.root.parents or self.root in root.parents:
                     raise ValueError(
                         "External storage must not overlap the internal MiniTopol Storage")
@@ -268,6 +270,10 @@ class TieredStorage:
                 if type(cache_slack_bytes) is not int or cache_slack_bytes < 0:
                     raise ValueError("cache_slack_bytes must be a nonnegative integer")
                 changes["cache_slack_bytes"] = cache_slack_bytes
+            if atlas_source_tier is not None:
+                if atlas_source_tier not in ("internal", "external"):
+                    raise ValueError("atlas_source_tier must be internal or external")
+                changes["atlas_source_tier"] = atlas_source_tier
             if write_policy is not None:
                 if write_policy not in ("longevity", "balanced", "throughput"):
                     raise ValueError("Invalid write_policy")
@@ -281,10 +287,11 @@ class TieredStorage:
                     raise ValueError("prefetch_batches must be between 1 and 64")
                 changes["prefetch_batches"] = prefetch_batches
             merged = {**current, **changes}
-            if merged["enabled"] and merged["external_root"] is None:
-                raise ValueError("Configure external storage before enabling multi-tier batches")
+            if (merged["enabled"] or merged["atlas_source_tier"] == "external") and merged["external_root"] is None:
+                raise ValueError("Configure external storage before enabling multi-tier batches or ATLAS sources")
             if merged["external_root"] is not None and (
-                    external_root is not None or enabled is True):
+                    external_root is not None or enabled is True
+                    or atlas_source_tier == "external"):
                 self._external_root(merged)
             with self._db() as db:
                 for key, value in changes.items():
