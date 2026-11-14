@@ -89,3 +89,43 @@ Writing still adds real latency to the Reader-visible request. File access
 plus AGX decompression are not separately timed. Reader transport/consumption
 are not included. Use non-profile runs when benchmarking absolute end-to-end
 throughput.
+
+
+## Provider-owned RAM → VRAM transfer (optional CUDA)
+
+The Reader is a transport-only client. It does not import CUDA, NumPy for GPU
+work, PyTorch, or CuPy to implement VRAM allocation. All device buffers and
+resource lifetimes remain owned by MiniTopol Provider.
+
+1. Obtain a normal RAM lease with `Reader.request(...)`.
+2. While that RAM lease is live, call
+   `Reader.upload_vram(ram_lease_id, buffers=None, device=0)`.
+3. Provider pins the source cache entry temporarily, copies each selected
+   **whole buffer** using Numba's native CUDA host-to-device transfer, and
+   synchronizes the GPU before returning a distinct `vram_lease`.
+4. Release the source RAM lease when no longer needed. The VRAM lease remains
+   valid independently; release with `Reader.release_vram(vram_lease)`.
+   `Reader.vram_status()` reports the number of held VRAM leases and the
+   logical total bytes. Provider refuses to stop with an outstanding lease.
+
+The API routes are `POST /v1/vram/upload` (RAM lease token, optional buffer
+names and CUDA device index), `POST /v1/vram/release` (VRAM lease token), and
+`GET /v1/vram/status`. CUDA is loaded lazily only on upload. A machine
+without an available CUDA device returns an explicit error and preserves the
+RAM lease; no CPU-only fake transfer is reported as a VRAM success.
+
+Coordinates, time and box retain native array dtype and shape. Descriptor
+buffers retain their original Arrow IPC bytes (uint8 in VRAM); this does not
+silently decode descriptors into tensors. The response returns metadata and
+an opaque VRAM lease token, **not a CUDA pointer or an interprocess-accessible
+GPU tensor**. GPU consumers running outside the Provider process cannot
+dereference the token; cross-process CUDA IPC and training-side GPU access
+require a separately specified interface. This implementation supports
+Provider-owned device residency and upload/release testing, without pretending
+to support a GPU consumer protocol that is not defined.
+
+Upload uses a native CUDA copy per requested buffer, not Python loops over
+frames or atoms. The copy is synchronous at the API boundary, so the RAM
+source can be safely released once the upload response is received. GPU memory
+is not counted toward the Provider RAM cache limit; free VRAM is checked before
+allocation. No automatic performance benchmark or AF metric is added.

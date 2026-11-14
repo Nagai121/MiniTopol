@@ -24,6 +24,7 @@ from filelock import FileLock, Timeout
 
 from ..registry import Registry
 from ..workspace import Workspace
+from .vram_leases import VramLeases
 
 PROTOCOL = 1
 GLOBAL_DESCRIPTORS = frozenset(("rmsf", "msd", "time_correlation", "dynamic_correlation"))
@@ -203,6 +204,17 @@ class Cache:
             return {"lease": lease, "buffers": self.entries[key]["metadata"],
                     "cache_bytes": self.used, "budget_bytes": self.budget}
 
+    def pin(self, lease):
+        """Return a private temporary lease and its immutable cache entry."""
+        with self.lock:
+            key = self.leases.get(lease)
+            if key is None:
+                raise KeyError("Unknown or already released RAM lease")
+            token = secrets.token_urlsafe(24)
+            self.leases[token] = key
+            self.entries[key]["leases"].add(token)
+            return token, self.entries[key]
+
     def release(self, lease):
         with self.lock:
             key = self.leases.pop(lease, None)
@@ -241,6 +253,7 @@ class DataProvider:
         self.decoded_used = 0
         self.decoded_chunks = OrderedDict()
         self.cache = Cache(budget - self.decoded_budget)
+        self.vram = VramLeases(self.cache)
         self.profiling_enabled = os.environ.get("MINITOPOL_PROVIDER_PROFILE") == "1"
         override = os.environ.get("MINITOPOL_PROVIDER_PROFILE_PATH")
         self.profile_path = (
@@ -556,6 +569,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self.server.provider.list_data())
             if self.path == "/v1/storage/status":
                 return self._send(200, self.server.provider.storage_status())
+            if self.path == "/v1/vram/status":
+                return self._send(200, self.server.provider.vram.status())
             return self._send(404, {"error": "Unknown route"})
         if self.command != "POST":
             return self._send(405, {"error": "Method not allowed"})
@@ -567,6 +582,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, self.server.provider.get(payload))
         if self.path == "/v1/release":
             return self._send(200, self.server.provider.cache.release(payload["lease"]))
+        if self.path == "/v1/vram/upload":
+            return self._send(200, self.server.provider.vram.upload(payload))
+        if self.path == "/v1/vram/release":
+            return self._send(200, self.server.provider.vram.release(payload))
         if self.path == "/v1/storage/configure":
             return self._send(200, self.server.provider.configure_storage(payload))
         if self.path == "/v1/storage/offload":
@@ -584,8 +603,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/batches/cancel":
             return self._send(200, self.server.provider.cancel_plan(payload["plan_id"]))
         if self.path == "/v1/stop":
-            if self.server.provider.cache.status()["active_leases"]:
-                return self._send(409, {"error": "Release active leases before stopping Provider"})
+            if (self.server.provider.cache.status()["active_leases"]
+                    or self.server.provider.vram.status()["active_leases"]):
+                return self._send(409, {"error": "Release RAM and VRAM leases before stopping Provider"})
             self._send(200, {"stopping": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
@@ -604,6 +624,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": f"{type(error).__name__}: {error}"})
         except MemoryError as error:
             self._send(507, {"error": str(error)})
+        except RuntimeError as error:
+            self._send(503, {"error": str(error)})
         except Exception as error:
             self._send(500, {"error": f"{type(error).__name__}: {error}"})
 
@@ -653,6 +675,7 @@ def serve(*, budget_bytes=None, provider_factory=None):
             if hasattr(provider, "close"):
                 provider.close()
             else:
+                provider.vram.close()
                 provider.cache.close()
     finally:
         if session is not None:
