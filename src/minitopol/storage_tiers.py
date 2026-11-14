@@ -115,6 +115,10 @@ class TieredStorage:
         # Protect the registration transition across processes and CLI/Provider.
         # An offload must never publish on a drive that configure() just changed.
         self._state_lock = FileLock(str(self.lock_root / "storage-configuration.lock"))
+        # A capacity decision and its copy must be atomic across Provider
+        # processes. Per-object locks alone cannot prevent two distinct
+        # concurrent requests from independently consuming the same headroom.
+        self._capacity_lock = FileLock(str(self.lock_root / "capacity-admission.lock"))
         self._touch_times = {}
         # Cache verification is scoped to this process. Never trust an existing
         # internal copy on a new Provider startup without checking its digest.
@@ -455,35 +459,34 @@ class TieredStorage:
             # read directly. No entire-object staging or artificial hard error.
             self._direct_external(relative, record)
             return "direct"
-        try:
-            self._prune(required=size, exempt=tuple(exempt) + (relative,))
-        except OSError as exc:
-            if "Temporary storage limit cannot accommodate" not in str(exc):
-                raise
-            # All remaining cache entries may be pinned by the same request.
-            # Reading directly avoids violating the configured SSD allowance.
-            self._direct_external(relative, record)
-            return "direct"
-        # The startup snapshot governs the *target*, but physical free space
-        # may have drifted. Never attempt a full-size temporary copy when the
-        # current disk has insufficient headroom for the transfer itself.
-        if shutil.disk_usage(self.root).free < size + 8 * MIB:
-            self._direct_external(relative, record)
-            return "direct"
-        try:
-            _copy_verified(external, internal, expected=record[1])
-        except OSError as exc:
-            if exc.errno != errno.ENOSPC:
-                raise
-            # If another process consumed free space between the check and
-            # copy, a failed staging operation must not prevent direct reads.
-            self._direct_external(relative, record)
-            return "direct"
-        with self._db() as db:
-            db.execute("UPDATE tier_objects SET last_used=? WHERE relative=?",
-                       (time.time(), relative))
-            self._add_metric(db, "internal_copy_operations", 1)
-            self._add_metric(db, "internal_written_bytes", size)
+        with self._capacity_lock:
+            # Serialize admission and publication of distinct staging copies.
+            # A concurrent transfer may have consumed capacity since the
+            # initial lookup; recompute used space while holding this lock.
+            try:
+                self._prune(required=size, exempt=tuple(exempt) + (relative,))
+            except OSError as exc:
+                if "Temporary storage limit cannot accommodate" not in str(exc):
+                    raise
+                self._direct_external(relative, record)
+                return "direct"
+            # The startup snapshot governs the *target*, but physical free
+            # space may have drifted. Reserve some transfer working room.
+            if shutil.disk_usage(self.root).free < size + 8 * MIB:
+                self._direct_external(relative, record)
+                return "direct"
+            try:
+                _copy_verified(external, internal, expected=record[1])
+            except OSError as exc:
+                if exc.errno != errno.ENOSPC:
+                    raise
+                self._direct_external(relative, record)
+                return "direct"
+            with self._db() as db:
+                db.execute("UPDATE tier_objects SET last_used=? WHERE relative=?",
+                           (time.time(), relative))
+                self._add_metric(db, "internal_copy_operations", 1)
+                self._add_metric(db, "internal_written_bytes", size)
         self._touch_times[relative] = time.monotonic()
         self._validated_internal[relative] = record[1]
         return True
