@@ -647,7 +647,7 @@ def test_numpy_chunk_grouping_keeps_order_and_duplicate_frames(tmp_path, traject
     times = np.concatenate([block.time for block in baseline])
     boxes = np.concatenate([block.box for block in baseline], axis=0)
     chosen = [8, 0, 4, 8, 2, 1, 0]
-    selected = [0, 2]
+    selected = [0, 1]
     provider = TieredProvider(ws.path, 16 * 1024**2)
     try:
         manifest = registry.manifest(tid)
