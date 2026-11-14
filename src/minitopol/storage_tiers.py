@@ -7,8 +7,10 @@ datasets are expendable and have a separate, startup-fixed space allowance.
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
+import errno
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -130,6 +132,8 @@ class TieredStorage:
             db.execute("""CREATE TABLE IF NOT EXISTS tier_metrics (
                 name TEXT PRIMARY KEY, value INTEGER NOT NULL)""")
             for name, value in (("enabled", False), ("cache_percent", 10.0),
+                                ("cache_limit_bytes", None), ("cache_slack_percent", 10.0),
+                                ("cache_slack_bytes", 0),
                                 ("write_policy", "longevity"), ("prefetch_batches", 1),
                                 ("external_root", None),
                                 ("external_identity", None)):
@@ -174,6 +178,7 @@ class TieredStorage:
         return root
 
     def configure(self, *, enabled=None, external_root=None, cache_percent=None,
+                  cache_limit_bytes=None, cache_slack_percent=None, cache_slack_bytes=None,
                   write_policy=None, prefetch_batches=None):
         with self._state_lock, self._mutex:
             current = self.settings()
@@ -218,11 +223,28 @@ class TieredStorage:
                 if type(enabled) is not bool:
                     raise ValueError("enabled must be boolean")
                 changes["enabled"] = enabled
+            if cache_percent is not None and cache_limit_bytes is not None:
+                raise ValueError("Specify either cache_percent or cache_limit_bytes, not both")
             if cache_percent is not None:
                 if (isinstance(cache_percent, bool) or not isinstance(cache_percent, (int, float))
-                        or not 0 < cache_percent <= 100):
-                    raise ValueError("cache_percent must be in (0, 100]")
+                        or not math.isfinite(cache_percent) or not 0 < cache_percent <= 100):
+                    raise ValueError("cache_percent must be finite and in (0, 100]")
                 changes["cache_percent"] = float(cache_percent)
+                changes["cache_limit_bytes"] = None  # Switch back to relative mode.
+            if cache_limit_bytes is not None:
+                if type(cache_limit_bytes) is not int or cache_limit_bytes < 0:
+                    raise ValueError("cache_limit_bytes must be a nonnegative integer")
+                changes["cache_limit_bytes"] = cache_limit_bytes
+            if cache_slack_percent is not None:
+                if (isinstance(cache_slack_percent, bool) or
+                        not isinstance(cache_slack_percent, (int, float)) or
+                        not math.isfinite(cache_slack_percent) or cache_slack_percent < 0):
+                    raise ValueError("cache_slack_percent must be finite and nonnegative")
+                changes["cache_slack_percent"] = float(cache_slack_percent)
+            if cache_slack_bytes is not None:
+                if type(cache_slack_bytes) is not int or cache_slack_bytes < 0:
+                    raise ValueError("cache_slack_bytes must be a nonnegative integer")
+                changes["cache_slack_bytes"] = cache_slack_bytes
             if write_policy is not None:
                 if write_policy not in ("longevity", "balanced", "throughput"):
                     raise ValueError("Invalid write_policy")
@@ -274,8 +296,20 @@ class TieredStorage:
         return [(name, size, last) for name, size, last in rows
                 if self._safe_path(self.root, name).exists()]
 
-    def _cap(self):
-        return int(self.available_at_start * self.settings()["cache_percent"] / 100.0)
+    def _cap(self, config=None):
+        config = config or self.settings()
+        fixed = config.get("cache_limit_bytes")
+        if fixed is not None:
+            return fixed
+        return int(self.available_at_start * config["cache_percent"] / 100.0)
+
+    def _soft_cap(self, config=None):
+        config = config or self.settings()
+        target = self._cap(config)
+        # This is operational headroom for capacity fluctuations and atomic
+        # transfer peaks, not an allocation guarantee. Physical free space is
+        # checked separately before every actual copy.
+        return target + int(target * config["cache_slack_percent"] / 100.0) + config["cache_slack_bytes"]
 
     def status(self):
         config = self.settings()
@@ -292,12 +326,15 @@ class TieredStorage:
                 pass
         return {**config, **metrics, "external_available": external_available,
                 "available_at_start_bytes": self.available_at_start,
-                "temporary_cache_limit_bytes": self._cap(),
+                "available_now_bytes": shutil.disk_usage(self.root).free,
+                "temporary_cache_mode": "absolute" if config["cache_limit_bytes"] is not None else "relative",
+                "temporary_cache_limit_bytes": self._cap(config),
+                "temporary_cache_soft_limit_bytes": self._soft_cap(config),
                 "temporary_cache_bytes": sum(size for _, size, _ in rows),
                 "managed_external_objects": objects}
 
     def _prune(self, *, required=0, exempt=(), all_cache=False):
-        cap = self._cap()
+        cap = self._soft_cap()
         rows = self._cache_rows()
         used = sum(size for _, size, _ in rows)
         removed = []
@@ -413,9 +450,9 @@ class TieredStorage:
             return False
         external = self._safe_path(self._external_root(), relative)
         size = record[2]
-        if size > self._cap():
-            # No SSD copy. The consuming request reads the verified external
-            # primary via the Workspace's thread-isolated read-only overlay.
+        if size > self._soft_cap():
+            # A logical object larger than the configured soft allowance is
+            # read directly. No entire-object staging or artificial hard error.
             self._direct_external(relative, record)
             return "direct"
         try:
@@ -427,7 +464,21 @@ class TieredStorage:
             # Reading directly avoids violating the configured SSD allowance.
             self._direct_external(relative, record)
             return "direct"
-        _copy_verified(external, internal, expected=record[1])
+        # The startup snapshot governs the *target*, but physical free space
+        # may have drifted. Never attempt a full-size temporary copy when the
+        # current disk has insufficient headroom for the transfer itself.
+        if shutil.disk_usage(self.root).free < size + 8 * MIB:
+            self._direct_external(relative, record)
+            return "direct"
+        try:
+            _copy_verified(external, internal, expected=record[1])
+        except OSError as exc:
+            if exc.errno != errno.ENOSPC:
+                raise
+            # If another process consumed free space between the check and
+            # copy, a failed staging operation must not prevent direct reads.
+            self._direct_external(relative, record)
+            return "direct"
         with self._db() as db:
             db.execute("UPDATE tier_objects SET last_used=? WHERE relative=?",
                        (time.time(), relative))
