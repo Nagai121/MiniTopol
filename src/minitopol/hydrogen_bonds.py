@@ -383,7 +383,7 @@ class HydrogenBondStore:
 
 def hydrogen_bond_info(workspace, trajectory):
     """Read and verify an independently completed hydrogen-bond dataset."""
-    directory = workspace.trajectory_path(trajectory) / "hydrogen_bonds"
+    directory = workspace.read_trajectory_path(trajectory) / "hydrogen_bonds"
     path = directory / "manifest.json"
     if not path.is_file():
         return None
