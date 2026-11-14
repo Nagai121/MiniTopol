@@ -19,15 +19,16 @@ class BondStore:
     def __init__(self, workspace):
         self.workspace = workspace
 
-    def _paths(self, trajectory):
-        directory = self.workspace.trajectory_path(trajectory)
+    def _paths(self, trajectory, *, read=False):
+        directory = (self.workspace.read_trajectory_path(trajectory) if read
+                     else self.workspace.trajectory_path(trajectory))
         return directory / "bonds.parquet", directory / "bonds.json"
 
     def _verify(self, trajectory, record):
         manifest = Registry(self.workspace).manifest(trajectory)
         if record.get("schema") != 1 or record["a_identity"] != manifest["identity"]:
             raise IOError("Bond record does not match the completed A trajectory")
-        data, _ = self._paths(trajectory)
+        data, _ = self._paths(trajectory, read=True)
         if not data.is_file() or fingerprint(data)["sha256"] != record["sha256"]:
             raise IOError("Bond data missing or checksum mismatch")
         table = pq.read_table(data)
@@ -95,7 +96,7 @@ class BondStore:
         return len(edge_list)
 
     def get(self, trajectory):
-        data, marker = self._paths(trajectory)
+        data, marker = self._paths(trajectory, read=True)
         if not marker.is_file():
             raise LookupError("No completed bond graph for this trajectory")
         with self.workspace.lock("trajectory-bonds-" + trajectory):
@@ -105,7 +106,7 @@ class BondStore:
             return table
 
     def info(self, trajectory):
-        _, marker = self._paths(trajectory)
+        _, marker = self._paths(trajectory, read=True)
         if not marker.is_file():
             return None
         with self.workspace.lock("trajectory-bonds-" + trajectory):
