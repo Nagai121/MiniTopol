@@ -230,8 +230,16 @@ class Workspace:
         return self.path / str(path)
 
     def trajectory_path(self, trajectory):
-        """Return the internal physical path used by protected scientific writers."""
-        return self.path / "trajectories" / identifier(trajectory)
+        """Use the Provider's explicit overlay, else the physical writer path.
+
+        Background Provider kernels still obtain paths with this established
+        API. An explicit storage_read_scope must therefore take precedence.
+        Unscoped scientific writes retain the original internal path.
+        """
+        name = identifier(trajectory)
+        if str(self.path) in getattr(_query_session_local, "storage_overrides", {}):
+            return self.resolve_path("trajectories/" + name)
+        return self.path / "trajectories" / name
 
     def read_trajectory_path(self, trajectory):
         """Return the readable internal or verified external trajectory path."""
