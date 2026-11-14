@@ -263,6 +263,9 @@ def test_atlas_raw_external_storage_and_location_persistence(tmp_path, monkeypat
     assert (workspace.path / "sources" / "ATLAS" / "downloads.tsv").is_file()
     assert source_directory(workspace, "1k5n_A", "analysis") == archive.parent
     assert len(client.download(workspace, "1k5n_A")["files"]) == 2
+    from minitopol.atlas.ledger import migrate_atlas_sources
+    assert migrate_atlas_sources(workspace) == 0
+    assert archive.is_file()
     manager.configure(atlas_source_tier="internal")
     # The recorded placement outlives a change of default for new datasets.
     assert source_directory(workspace, "1k5n_A", "analysis") == archive.parent
