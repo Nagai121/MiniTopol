@@ -28,7 +28,15 @@ def main(argv=None):
     switch = configure.add_mutually_exclusive_group()
     switch.add_argument("--enable", action="store_true")
     switch.add_argument("--disable", action="store_true")
-    configure.add_argument("--cache-percent", type=float)
+    budget = configure.add_mutually_exclusive_group()
+    budget.add_argument("--cache-percent", type=float,
+                        help="Percent of available startup bytes; default 10")
+    budget.add_argument("--cache-limit-gib", type=float,
+                        help="Absolute internal staging target in GiB")
+    configure.add_argument("--cache-slack-percent", type=float,
+                           help="Allowed overage as percent of target; default 10")
+    configure.add_argument("--cache-slack-gib", type=float,
+                           help="Additional burst allowance in GiB; default 0")
     configure.add_argument("--prefetch-batches", type=int)
     configure.add_argument("--write-policy", choices=["longevity", "balanced", "throughput"])
     ingest = storage_commands.add_parser("ingest")
@@ -131,9 +139,19 @@ def main(argv=None):
         if args.storage_action == "status":
             result = manager.status()
         elif args.storage_action == "configure":
+            import math
+            for label, number in (("--cache-limit-gib", args.cache_limit_gib),
+                                  ("--cache-slack-gib", args.cache_slack_gib)):
+                if number is not None and (not math.isfinite(number) or number < 0):
+                    parser.error(f"{label} must be a nonnegative finite number")
             result = manager.configure(
                 enabled=True if args.enable else (False if args.disable else None),
                 external_root=args.external, cache_percent=args.cache_percent,
+                cache_limit_bytes=(round(args.cache_limit_gib * 1024**3)
+                                   if args.cache_limit_gib is not None else None),
+                cache_slack_percent=args.cache_slack_percent,
+                cache_slack_bytes=(round(args.cache_slack_gib * 1024**3)
+                                   if args.cache_slack_gib is not None else None),
                 prefetch_batches=args.prefetch_batches, write_policy=args.write_policy)
         elif args.storage_action == "offload":
             result = manager.offload(args.relative)
