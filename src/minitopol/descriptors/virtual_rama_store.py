@@ -24,7 +24,12 @@ def source_hashes():
 # instead of disabling the strict scientific source contract.
 _ROUTING_COMPATIBILITY = {
     'virtual_rama.py': {'abebdc2697f86ecd6eed710224dbcc9882bacf68811d082c0ebdf560bb1d75b7'},
-    'descriptors/virtual_rama_store.py': {'8adc49cf7ed35060a6cc42f4c4e173f43ad093be9c332a1327c026712d21bfd0'},
+    'registry.py': {'a12b031bed5767fc27fd637f827141b0be0e360bda3101121f840c015be0da66'},
+    'annotations.py': {'39f7a5b6dd9e4902488806af32e0548f80b20ef72a6fceacb50e9215e0c1dcf4'},
+    'descriptors/virtual_rama_store.py': {
+        '8adc49cf7ed35060a6cc42f4c4e173f43ad093be9c332a1327c026712d21bfd0',
+        'a6d986727c7e8688534c20b8fe2abd536257ce3da2a925dc34f84319dc4bb374',
+    },
 }
 
 
@@ -50,7 +55,7 @@ def verify_axes(path,info,workspace=None):
     from ..workspace import Workspace
     root=workspace.path if workspace is not None else workspace_root(path)
     proxy=reader.ReadOnlyWorkspace(root,root/'locks',
-                                   overrides=workspace.storage_read_overrides() if workspace is not None else None)
+                                   overrides=workspace.readonly_overrides(info['trajectory']) if workspace is not None else None)
     meta=read_json(axes(path))
     if meta['info']!=info or meta['environment']!=environment():raise IOError('Virtual recipe scientific/source/runtime contract changed')
     _verify_rama_sources(meta['source_hashes'])
