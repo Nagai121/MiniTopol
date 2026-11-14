@@ -36,10 +36,14 @@ class BondStore:
             or table.schema.types != [pa.int64(), pa.int64()]
             or table.num_rows != record["edges"]):
             raise IOError("Bond graph schema or edge count mismatch")
-        endpoints = table.to_pydict()
-        edges = list(zip(endpoints["point_i"], endpoints["point_j"]))
-        if (any(not 0 <= x < y < manifest["atoms"] for x, y in edges)
-            or edges != sorted(set(edges))):
+        # Avoid converting large bond columns into Python tuples/sets.
+        # Arrow -> NumPy views and native vector comparisons preserve the
+        # strict 0 <= i < j < atoms and unique lexicographic order contract.
+        left = table["point_i"].to_numpy(zero_copy_only=False)
+        right = table["point_j"].to_numpy(zero_copy_only=False)
+        if (not ((left >= 0) & (left < right) & (right < manifest["atoms"])).all()
+                or not ((left[1:] > left[:-1])
+                        | ((left[1:] == left[:-1]) & (right[1:] > right[:-1]))).all()):
             raise IOError("Bond graph indices are invalid or unordered")
         return table
 
