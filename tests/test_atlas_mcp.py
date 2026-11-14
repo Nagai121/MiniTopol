@@ -241,6 +241,14 @@ def test_atlas_raw_external_storage_and_location_persistence(tmp_path, monkeypat
     external.mkdir()
     manager = TieredStorage(workspace.path)
     manager.configure(external_root=external, atlas_source_tier="external")
+    assert manager.status()["atlas_source_tier"] == "external"
+    from minitopol.provider.tiered import TieredProvider
+    provider = TieredProvider(workspace.path, 16 * 1024**2)
+    try:
+        assert provider.configure_storage(
+            {"atlas_source_tier": "external"})["atlas_source_tier"] == "external"
+    finally:
+        provider.close()
     payload = archive_bytes()
     client = AtlasClient(opener=lambda request, timeout: FakeResponse(payload))
     acquired = client.download(workspace, "1k5n_A", extract=True)
