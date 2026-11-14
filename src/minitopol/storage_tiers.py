@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+from .windows_paths import filesystem_path
 import re
 import shutil
 import sqlite3
@@ -204,7 +205,7 @@ class TieredStorage:
             current = self.settings()
             changes = {}
             if external_root is not None:
-                root = Path(external_root).expanduser().resolve()
+                root = filesystem_path(Path(external_root).expanduser(), threshold=160).resolve()
                 if root == self.root or root in self.root.parents or self.root in root.parents:
                     raise ValueError(
                         "External storage must not overlap the internal MiniTopol Storage")
