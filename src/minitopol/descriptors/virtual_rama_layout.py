@@ -48,7 +48,7 @@ def logical_tables(workspace, relative, *, start=None, stop=None):
         raise IOError('Invalid published virtual output budget')
     proxy = ReadOnlyWorkspace(
         workspace.path, workspace.path / 'locks',
-        overrides=workspace.storage_read_overrides())
+        overrides=workspace.readonly_overrides(completed['info']['trajectory']))
     ctx = AnalysisContext(
         proxy, info['trajectory'], coordinate_mode=parameters['coordinate_mode'],
         initial_whole=parameters['initial_whole'],
