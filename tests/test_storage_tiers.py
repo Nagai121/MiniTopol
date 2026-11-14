@@ -376,3 +376,102 @@ def test_virtual_rama_scientific_source_checks_allow_only_known_routing_revision
     previous['registry.py'] = '0' * 64
     with pytest.raises(IOError, match="source changed"):
         _verify_rama_sources(previous)
+
+
+def test_soft_cache_absolute_budget_and_percentage_switch(tmp_path):
+    local = tmp_path / "internal"
+    _data(local, contents=b"A" * 110)
+    (tmp_path / "usb").mkdir()
+    manager = TieredStorage(local)
+    manager.configure(external_root=tmp_path / "usb", enabled=True,
+                      cache_limit_bytes=100, cache_slack_percent=20,
+                      cache_slack_bytes=0)
+    config = manager.status()
+    assert config["temporary_cache_mode"] == "absolute"
+    assert config["temporary_cache_limit_bytes"] == 100
+    assert config["temporary_cache_soft_limit_bytes"] == 120
+    manager.offload("trajectories/trajectory-one")
+    # Under the soft ceiling, do not evict the only internal cached copy.
+    assert (local / "trajectories/trajectory-one/A.zarr/positions/0").is_file()
+    manager.prune(all_cache=True)
+    assert manager.ensure("trajectories/trajectory-one")["transferred"] is True
+    assert manager.status()["temporary_cache_bytes"] == 110
+
+    # Changing percentage explicitly switches to the relative mode;
+    # a percentage above the old 10% default is accepted.
+    updated = manager.configure(cache_percent=60)
+    assert updated["temporary_cache_mode"] == "relative"
+    assert updated["cache_limit_bytes"] is None
+    assert updated["cache_percent"] == 60
+    assert updated["temporary_cache_limit_bytes"] == int(
+        manager.available_at_start * 0.60
+    )
+    assert updated["temporary_cache_soft_limit_bytes"] == int(
+        updated["temporary_cache_limit_bytes"] * 1.20
+    )
+
+
+def test_soft_cache_absolute_slack_and_direct_fallback(tmp_path):
+    local = tmp_path / "internal"
+    _data(local, contents=b"B" * 200)
+    (tmp_path / "usb").mkdir()
+    manager = TieredStorage(local)
+    manager.configure(external_root=tmp_path / "usb", enabled=True,
+                      cache_limit_bytes=100, cache_slack_percent=0,
+                      cache_slack_bytes=125)
+    assert manager.status()["temporary_cache_soft_limit_bytes"] == 225
+    manager.offload("trajectories/trajectory-one")
+    manager.prune(all_cache=True)
+    assert manager.ensure("trajectories/trajectory-one")["transferred"] is True
+    manager.prune(all_cache=True)
+    # The same 200-byte object no longer fits when burst tolerance is reduced.
+    manager.configure(cache_slack_bytes=0)
+    outcome = manager.ensure("trajectories/trajectory-one")
+    assert outcome["direct_read"] is True
+    assert outcome["transferred"] is False
+    assert not (local / "trajectories/trajectory-one").exists()
+
+
+def test_invalid_capacity_modes_do_not_modify_persisted_settings(tmp_path):
+    local = tmp_path / "internal"
+    _data(local)
+    manager = TieredStorage(local)
+    before = manager.settings()
+    invalids = (
+        {"cache_limit_bytes": -1},
+        {"cache_limit_bytes": 1.0},
+        {"cache_limit_bytes": True},
+        {"cache_slack_bytes": -1},
+        {"cache_slack_bytes": False},
+        {"cache_slack_percent": float("nan")},
+        {"cache_slack_percent": -1},
+        {"cache_percent": float("inf")},
+        {"cache_percent": 0},
+        {"cache_percent": 10, "cache_limit_bytes": 1024},
+    )
+    for options in invalids:
+        with pytest.raises(ValueError):
+            manager.configure(**options)
+        assert manager.settings() == before
+
+
+def test_physical_space_drift_falls_back_to_external_direct_reads(tmp_path, monkeypatch):
+    import minitopol.storage_tiers as tiers
+
+    local = tmp_path / "internal"
+    _data(local, contents=b"C" * 100)
+    (tmp_path / "usb").mkdir()
+    manager = TieredStorage(local)
+    manager.configure(external_root=tmp_path / "usb", enabled=True,
+                      cache_limit_bytes=1000, cache_slack_percent=25)
+    manager.offload("trajectories/trajectory-one")
+    manager.prune(all_cache=True)
+    original = tiers.shutil.disk_usage
+    result = original(local)
+    monkeypatch.setattr(
+        tiers.shutil, "disk_usage",
+        lambda path: type(result)(result.total, result.used, 0)
+    )
+    request = manager.ensure("trajectories/trajectory-one")
+    assert request["direct_read"] is True
+    assert not (local / "trajectories/trajectory-one").exists()
