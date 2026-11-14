@@ -24,6 +24,8 @@ class Workspace:
         registered = requested is None and record.is_file()
         self.path = Path(requested if requested is not None else self.default_path()).resolve()
         self._write_nesting = threading.local()
+        self._tier_access_lock = threading.Lock()
+        self._tier_access = None
         if registered and (not self.path.is_dir() or not (self.path / "integrated.duckdb").is_file()):
             raise FileNotFoundError(f"Registered MiniTopol Storage or its catalog is missing: {self.path}")
         if requested is None and not registered and not self.path.exists():
@@ -171,19 +173,54 @@ class Workspace:
             str(self.path), {}))
 
     def resolve_path(self, relative):
-        """Resolve a published relative data path without relocating its DB."""
+        """Resolve read-only scientific paths against published external primaries.
+
+        A Provider get() supplies an explicit storage_read_scope and thus retains
+        its choice of staged cache versus direct read. Unscoped Registry and
+        Workspace queries consult the durable placement catalog themselves.
+        This does NOT change the internal physical writer paths.
+        """
         path = PurePosixPath(str(relative))
         if path.is_absolute() or ".." in path.parts:
             raise ValueError("Data path must be relative to Workspace")
-        for object_name, external in sorted(
-                self.storage_read_overrides().items(), key=lambda pair: len(pair[0]), reverse=True):
-            root = PurePosixPath(object_name)
-            if path == root or root in path.parents:
-                subpath = path.relative_to(root)
-                return Path(external) / subpath
+        key = str(self.path)
+        scopes = getattr(_query_session_local, "storage_overrides", {})
+        if key in scopes:
+            for object_name, external in sorted(
+                    scopes[key].items(), key=lambda pair: len(pair[0]), reverse=True):
+                root = PurePosixPath(object_name)
+                if path == root or root in path.parents:
+                    return Path(external) / path.relative_to(root)
+            return self.path / str(path)
+
+        parts = path.parts
+        if len(parts) >= 2 and parts[0] == "trajectories":
+            object_name = "/".join(parts[:2])
+        elif len(parts) >= 3 and parts[0] in ("descriptors", "sources"):
+            object_name = "/".join(parts[:3])
+        else:
+            return self.path / str(path)
+        if not (self.path / ".minitopol-tier-registry").exists():
+            return self.path / str(path)
+        if not (self.path / "storage_index.sqlite3").is_file():
+            raise FileNotFoundError("Storage placement catalog is missing")
+        if self._tier_access is None:
+            with self._tier_access_lock:
+                if self._tier_access is None:
+                    from .storage_tiers import TieredStorage
+                    self._tier_access = TieredStorage(self.path)
+        record = self._tier_access._object(object_name)
+        if record is not None and record[0] == "external":
+            external = self._tier_access._direct_external(object_name, record)
+            return external / path.relative_to(PurePosixPath(object_name))
         return self.path / str(path)
 
     def trajectory_path(self, trajectory):
+        """Return the internal physical path used by protected scientific writers."""
+        return self.path / "trajectories" / identifier(trajectory)
+
+    def read_trajectory_path(self, trajectory):
+        """Return the readable internal or verified external trajectory path."""
         return self.resolve_path("trajectories/" + identifier(trajectory))
 
     def list_trajectories(self):
