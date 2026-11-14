@@ -476,3 +476,50 @@ def test_physical_space_drift_falls_back_to_external_direct_reads(tmp_path, monk
     request = manager.ensure("trajectories/trajectory-one")
     assert request["direct_read"] is True
     assert not (local / "trajectories/trajectory-one").exists()
+
+
+def test_concurrent_soft_limit_admission_is_serialized(tmp_path, monkeypatch):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    import minitopol.storage_tiers as tiers
+
+    local = tmp_path / "internal"
+    _data(local, name="first", contents=b"1" * 75)
+    _data(local, name="second", contents=b"2" * 75)
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    storage = TieredStorage(local)
+    storage.configure(external_root=usb, enabled=True,
+                      cache_limit_bytes=100, cache_slack_percent=10)
+    storage.offload("trajectories/first")
+    storage.offload("trajectories/second")
+    storage.prune(all_cache=True)
+
+    original = tiers._copy_verified
+    counter_lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def counted_copy(src, destination, expected=None):
+        nonlocal active, peak
+        if local in destination.parents:
+            with counter_lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                time.sleep(0.05)
+                return original(src, destination, expected=expected)
+            finally:
+                with counter_lock:
+                    active -= 1
+        return original(src, destination, expected=expected)
+
+    monkeypatch.setattr(tiers, "_copy_verified", counted_copy)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        one = pool.submit(storage.ensure, "trajectories/first")
+        two = pool.submit(storage.ensure, "trajectories/second")
+        assert one.result(timeout=30)["relative"] == "trajectories/first"
+        assert two.result(timeout=30)["relative"] == "trajectories/second"
+    assert peak == 1
+    assert storage.status()["temporary_cache_bytes"] <= 110
