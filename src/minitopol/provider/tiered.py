@@ -157,4 +157,5 @@ class TieredProvider(OptimizedProvider):
 
     def close(self):
         self._pool.shutdown(wait=True, cancel_futures=True)
+        self.vram.close()
         self.cache.close()

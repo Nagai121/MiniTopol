@@ -481,3 +481,86 @@ def test_optimized_provider_streams_global_arrow_and_scopes_contacts(prepared):
         assert contacts["value"].to_pylist() == [1., .25]
     finally:
         provider.cache.close()
+
+
+def test_provider_vram_upload_residency_and_release_without_cuda(prepared, monkeypatch):
+    """Mock the device boundary; CI needs no physical NVIDIA GPU."""
+    from contextlib import nullcontext
+    from minitopol.provider.vram_leases import VramLeases
+
+    class MemoryInfo:
+        def get_memory_info(self):
+            return 1024 * 1024, 1024 * 1024
+
+    class FakeCuda:
+        gpus = (nullcontext(),)
+        def __init__(self):
+            self.uploaded = []
+            self.syncs = 0
+        def current_context(self):
+            return MemoryInfo()
+        def to_device(self, host):
+            copy = np.array(host, copy=True)
+            self.uploaded.append(copy)
+            return copy
+        def synchronize(self):
+            self.syncs += 1
+
+    device = FakeCuda()
+    monkeypatch.setattr(VramLeases, "_cuda", staticmethod(lambda: device))
+    workspace, tid = prepared
+    provider = DataProvider(workspace.path, 8 * 1024 * 1024)
+    try:
+        source = provider.get({"trajectory": tid, "coordinates": True,
+                               "frames": [8, 0, 4], "descriptors": ["sample"]})
+        uploaded = provider.vram.upload({"lease": source["lease"], "device": 0})
+        assert uploaded["device"] == 0
+        assert [b["name"] for b in uploaded["buffers"]] == [
+            b["name"] for b in source["buffers"]]
+        assert uploaded["allocated_bytes"] == sum(b["bytes"] for b in source["buffers"])
+        assert device.syncs == 1
+        assert all(b.nbytes == m["bytes"] for b, m in zip(device.uploaded, source["buffers"]))
+        copied_coordinates = device.uploaded[0].copy()
+        provider.cache.release(source["lease"])
+        assert provider.vram.status()["active_leases"] == 1
+        np.testing.assert_array_equal(device.uploaded[0], copied_coordinates)
+        with pytest.raises(KeyError, match="RAM lease"):
+            provider.vram.upload({"lease": source["lease"]})
+        with pytest.raises(ValueError, match="buffers"):
+            provider.vram.upload({"lease": uploaded["vram_lease"], "buffers": ["coordinates", "coordinates"]})
+        assert provider.vram.release({"vram_lease": uploaded["vram_lease"]})["released"]
+        assert provider.vram.status() == {"active_leases": 0, "allocated_bytes": 0}
+        with pytest.raises(KeyError, match="VRAM lease"):
+            provider.vram.release({"vram_lease": uploaded["vram_lease"]})
+    finally:
+        provider.vram.close()
+        provider.cache.close()
+
+
+def test_vram_upload_subset_fails_atomically_and_preserves_ram(prepared, monkeypatch):
+    from contextlib import nullcontext
+    from minitopol.provider.vram_leases import VramLeases
+    class FakeCuda:
+        gpus = (nullcontext(),)
+        def current_context(self):
+            return self
+        def get_memory_info(self):
+            return 1, 1
+        def to_device(self, host):
+            raise AssertionError("must reject insufficient VRAM before allocation")
+    monkeypatch.setattr(VramLeases, "_cuda", staticmethod(lambda: FakeCuda()))
+    workspace, tid = prepared
+    service = DataProvider(workspace.path, 8 * 1024 * 1024)
+    try:
+        ram = service.get({"trajectory": tid, "coordinates": True, "frames": [0]})
+        with pytest.raises(ValueError, match="Unknown RAM buffers"):
+            service.vram.upload({"lease": ram["lease"], "buffers": ["wrong"]})
+        assert service.cache.status()["active_leases"] == 1
+        with pytest.raises(MemoryError, match="VRAM"):
+            service.vram.upload({"lease": ram["lease"], "buffers": ["coordinates"]})
+        assert service.vram.status()["active_leases"] == 0
+        assert service.cache.status()["active_leases"] == 1
+        service.cache.release(ram["lease"])
+    finally:
+        service.vram.close()
+        service.cache.close()
