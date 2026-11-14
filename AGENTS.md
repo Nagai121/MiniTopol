@@ -9,6 +9,7 @@
 | Provider、Reader、共有メモリ、性能計測 | [docs/provider-reader.md](docs/provider-reader.md) |
 | 外部・内部補助、多層バッチ、正本・容量管理 | [docs/tiered-storage.md](docs/tiered-storage.md) |
 | ATLASの取得、MCPサーバーの利用 | [docs/atlas-mcp.md](docs/atlas-mcp.md) |
+| Windowsでの長いパス・Gitチェックアウト | [docs/windows-long-paths.md](docs/windows-long-paths.md) |
 | 既存の科学的検証範囲・性能値の解釈 | [docs/validated-processing.md](docs/validated-processing.md) |
 
 **共通原則**：確定仕様を守り、科学データ・正本・既存APIを保護します。保存階層とデータ解釈はProvider側で管理し、Readerは薄い接続クライアントとします。変更後は関連テストで検証し、未検証事項を明示します。詳細は[開発規則](docs/agent-guidelines.md)に集約しています。
