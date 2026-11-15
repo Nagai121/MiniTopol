@@ -150,3 +150,34 @@ matters there -- the remaining lever is the codec path itself, which is
 precision-locked. The repeat-hit regression (0.79x) is noted as
 unexplained; the response is ~40 MB of shared memory at this scale and
 the difference may be lease/copy variance on this shared VM.
+
+### 15. AGX3 chunk decode breakdown (measurement only, 2026-11-15)
+
+bench/agx_decode_breakdown.py replicates position_moddelta.decode
+stage by stage on real chunks of the large fixture (32 frames x
+12288 atoms, raw 4,718,592 B, compressed ~0.71 MB), median of 30
+repeats on this shared VM (absolute values are load-dependent;
+the shares are the durable part):
+
+| stage | chunk 0 | chunk 1 | share |
+|---|---|---|---|
+| header parse + contract | 0.01 ms | 0.01 ms | ~0% |
+| payload SHA-256 verify (0.71 MB) | 4.20 ms | 3.98 ms | ~6% |
+| Blosc decode (zstd + bitshuffle) | 20.88 ms | 19.76 ms | ~30% |
+| unpredict (zigzag inverse + cumsum) | 15.12 ms | 13.92 ms | ~21% |
+| raw SHA-256 verify (4.72 MB) | 28.76 ms | 27.57 ms | ~42% |
+| sum of stages | 68.98 ms | 65.24 ms | |
+| library decode() end-to-end | 85.42 ms | 82.36 ms | |
+| AGX3Numcodec.decode (incl. copy) | 79.68 ms | 81.05 ms | |
+
+Reading: verification is about half the codec time. The two
+SHA-256 passes together are ~33 ms of the ~69 ms stage sum, and
+the raw-position checksum alone is the largest single stage
+(~42%); both hashes run at ~165-170 MB/s on this VM. Blosc
+(zstd/bitshuffle) is ~30% and the predictor inversion ~21%.
+Any speedup that keeps output values bit-identical must keep
+both checksums (they are the format's integrity contract, not
+optional work); the remaining levers are implementation-level:
+a faster SHA-256 path (identical output), overlapping the
+payload hash with the Blosc decode, and the Provider's existing
+multi-chunk parallelism. No library code was changed.
