@@ -1,0 +1,38 @@
+{
+ "coords_range128": {
+  "box": "31c816900345343dc4e32cd1dbbc6978e63c1a8746dc20f4773c07ddf0476a41",
+  "coordinates": "5370ba12b06bda0b225bc278f60cb28294baa2759812ee68e892cfc582d30aee",
+  "time": "598199d7842125761c24fd50ddb8d4cf19a3375401b3211de8fbada7612462ed"
+ },
+ "coords_random128": {
+  "box": "31c816900345343dc4e32cd1dbbc6978e63c1a8746dc20f4773c07ddf0476a41",
+  "coordinates": "b4be2ccf788964395e2167b86ddbe57b8284f296eb29e9dfa9d1385b4b7a18b5",
+  "time": "c51a44a3bbd133901ec18d1d4f135006571a7ac952dc6640237c863c38944be9"
+ },
+ "coords_subset64": {
+  "box": "7d3740477fc02ce0791c5eb06f92821c045394f0325ac72e3e9646110e02f29f",
+  "coordinates": "78fd611249ce452ac53502ae9a6545a7035ecd069fafb428e0834901a9a7c908",
+  "time": "33344a9a36b07fd9251abb3744fd2db837a160b17dd8e1baa5b2c30e2d387ddf"
+ },
+ "desc_range128": {
+  "descriptor:pairdist": "409e7b46fe817a3c1d35b46e13ce6423992b5e414a34b69fbf01424b0f697d52"
+ },
+ "desc_scattered64": {
+  "descriptor:pairdist": "5bb3d6ee11754bfc38ffa6cf29d51dba7a354b4bdda200eb0fba87594af7d0d4"
+ },
+ "desc_global": {
+  "descriptor:rmsf": "b6479a8a77bd089ed9954e036f4ccbfbe841d806097d23aa6a48a0c296fe0dd5"
+ },
+ "desc_small_range": {
+  "descriptor:sample": "39016861e86bf5e854d6620010e5c6b582c1df5910929badfa19d627a62bdb5c"
+ },
+ "mixed64": {
+  "box": "7d3740477fc02ce0791c5eb06f92821c045394f0325ac72e3e9646110e02f29f",
+  "coordinates": "78edd10574504cf1709fa34da17502190fe4605a55533389f804824c2afb4674",
+  "descriptor:pairdist": "bf3ffa33cb39f08753814b73300ed8ef5fc54f267fd59801f1b12c7cea73ff59",
+  "descriptor:sample": "38b60ce45e49a1d3156aa64230095247e67e5ba6a98cb2f46e39b9e4ecc91643",
+  "time": "33344a9a36b07fd9251abb3744fd2db837a160b17dd8e1baa5b2c30e2d387ddf"
+ },
+ "registry_blocks": "e114faac38a31aed84ea008a7c1852d48b401549c5a3de0cc376c56e08d2143e",
+ "query_results_rows": 20480
+}

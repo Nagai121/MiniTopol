@@ -108,8 +108,7 @@ class ExperimentalProvider(runtime.DataProvider):
                       np.empty(len(frames), dtype='<f8'),
                       np.empty((len(frames), 3, 3), dtype='<f4'))
         with runtime._stage(trace, 'zarr_open_metadata'):
-            source = zarr.open_group(str(self.workspace.trajectory_path(trajectory) / 'A.zarr'), mode='r')
-            arrays = tuple(source[name] for name in ('positions', 'time', 'box'))
+            arrays = self._zarr_source(trajectory, manifest['identity'])
             width = int(arrays[0].chunks[0])
         with runtime._stage(trace, 'chunk_grouping'):
             # Native sort/diff avoids per-frame Python grouping. Keep stable
@@ -147,7 +146,13 @@ class ExperimentalProvider(runtime.DataProvider):
 
         # Four in-flight chunks at most. Consume in source order to preserve
         # deterministic extraction and LRU behavior, with bounded intermediates.
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        # The pool is kept on the provider: creating four threads per request
+        # costs milliseconds and decodes are short.
+        pool = getattr(self, '_decode_pool', None)
+        if pool is None:
+            pool = self._decode_pool = ThreadPoolExecutor(
+                max_workers=4, thread_name_prefix='coord-decode')
+        if True:
             pending = {}
             next_item = iter(missing)
             for _ in range(4):
@@ -176,7 +181,7 @@ class ExperimentalProvider(runtime.DataProvider):
                 with runtime._stage(trace, 'coordinate_extract_copy'):
                     destinations = order[boundaries[index]:boundaries[index + 1]]
                     local = requested[destinations] - group * width
-                    output[0][destinations] = decoded[0][local][:, selected, :]
+                    output[0][destinations] = runtime._extract_positions(decoded[0], local, selected)
                     output[1][destinations] = decoded[1][local]
                     output[2][destinations] = decoded[2][local]
         return output

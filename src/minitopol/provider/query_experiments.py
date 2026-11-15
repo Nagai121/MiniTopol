@@ -62,10 +62,8 @@ class QueryProvider(experiments.ExperimentalProvider):
         return value
 
     def _paths(self, trajectory, name):
-        with self.workspace.catalog() as con:
-            return con.execute(
-                'SELECT id, path FROM results WHERE trajectory=? AND descriptor=? ORDER BY id',
-                [trajectory, name]).fetchall()
+        return [(result_id, path) for descriptor, result_id, path in
+                self._result_snapshot(trajectory) if descriptor == name]
 
     @staticmethod
     def _file_version(path):
@@ -187,4 +185,60 @@ class QueryProvider(experiments.ExperimentalProvider):
                                                     'secondary_structure', 'electrostatic_score'):
             return experiments.ExperimentalProvider._measured_descriptor(
                 self, trajectory, name, frames)
+        if 'parts' in self.features and name not in runtime.GLOBAL_DESCRIPTORS \
+                and name not in ('contacts', 'sasa', 'ramachandran'):
+            cached = self._generic_descriptor(trajectory, name, frames)
+            if cached is not None:
+                return cached
         return BaseProvider._descriptor(self, trajectory, name, frames)
+
+    def _generic_descriptor(self, trajectory, name, frames):
+        """Serve a generic frame-scoped descriptor from the parts cache.
+
+        The full published table is loaded once (keyed by result IDs and the
+        on-disk versions of the result file and its completion sidecar) and
+        each request selects rows from the cached table. Selection preserves
+        the published row order exactly: a slice or per-frame ranges when the
+        frame column is non-null and monotonic, otherwise the same mask
+        filter the uncached path applies. Returns None to fall back.
+        """
+        paths = self._paths(trajectory, name)
+        if not paths:
+            raise LookupError('No completed descriptor')
+        try:
+            key = ('gentable', trajectory, name, tuple(
+                (result_id, relative,
+                 self._file_version(self.workspace.resolve_path(relative)),
+                 self._file_version(self.workspace.resolve_path(relative).with_suffix('.json')))
+                for result_id, relative in paths))
+        except OSError:
+            return None
+
+        def load():
+            table = self.workspace.query_results(descriptor=name, trajectory=trajectory)
+            return table, table.get_total_buffer_size()
+
+        table = self._cached_part(key, load)
+        if 'frame' not in table.column_names:
+            return table
+        column = table['frame']
+        frames = list(frames)
+        if column.null_count == 0:
+            axis = column.to_numpy()
+            if len(axis) and (np.diff(axis) >= 0).all():
+                first, last = min(frames), max(frames)
+                if len(frames) == last - first + 1:
+                    lo = np.searchsorted(axis, first)
+                    hi = np.searchsorted(axis, last + 1)
+                    return table.slice(int(lo), int(hi - lo))
+                indices = []
+                for frame in sorted(set(frames)):
+                    lo = np.searchsorted(axis, frame)
+                    hi = np.searchsorted(axis, frame + 1)
+                    indices.extend(range(int(lo), int(hi)))
+                return table.take(pa.array(indices, type=pa.int64()))
+        if len(frames) == max(frames) - min(frames) + 1:
+            mask = pc.and_(pc.greater_equal(column, min(frames)), pc.less(column, max(frames) + 1))
+        else:
+            mask = pc.is_in(column, value_set=pa.array(frames, type=pa.int64()))
+        return table.filter(mask)

@@ -105,10 +105,26 @@ class Registry:
         return resolve(trajectory) if resolve is not None else self.workspace.trajectory_path(trajectory)
 
     def manifest(self, trajectory):
-        result = read_json(self._read_trajectory_path(trajectory) / "manifest.json")
+        # Manifests are immutable once conversion completes. Cache the parsed
+        # document per Registry, validated by the file's stat on every call;
+        # a rewrite (new conversion) changes the stat and is re-read.
+        path = self._read_trajectory_path(trajectory) / "manifest.json"
+        try:
+            stat = path.stat()
+            key = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except OSError:
+            key = None
+        cache = getattr(self, "_manifest_cache", None)
+        if cache is None:
+            cache = self._manifest_cache = {}
+        if key is not None and cache.get(trajectory, (None,))[0] == key:
+            return dict(cache[trajectory][1])
+        result = read_json(path)
         if result["status"] != "complete":
             raise ValueError("Trajectory conversion has not completed")
-        return result
+        if key is not None:
+            cache[trajectory] = (key, result)
+        return dict(result)
 
     def atoms(self, trajectory):
         self.manifest(trajectory)
@@ -172,12 +188,29 @@ class Registry:
         if groups and any(max(group["atoms"]) >= manifest["atoms"] for group in groups):
             raise ValueError("Representation references atoms absent from this A topology")
         source = zarr.open_group(str(self._read_trajectory_path(trajectory) / "A.zarr"), mode="r")
+        # Time and box are tiny; read the whole requested range once instead
+        # of one Zarr read per chunk (each read carries full codec/async
+        # overhead). Positions remain chunked. Slices yield identical values.
+        times = source["time"][start:stop]
+        boxes = source["box"][start:stop]
+        # Read positions in windows of up to four blocks: each Zarr slicing
+        # call carries several ms of dispatch overhead on top of codec work,
+        # while the decoded window stays a few MB. Block slices are views of
+        # the window (or the established per-block transform for C groups).
+        window_start, window = start, None
         for offset in range(start, stop, chunk_frames):
             end = min(offset + chunk_frames, stop)
-            positions = source["positions"][offset:end]
+            if window is None or offset < window_start or end > window_start + len(window):
+                window_start = offset
+                window = source["positions"][offset:min(offset + 4 * chunk_frames, stop)]
+            # Copy so each block owns its array, as a direct Zarr read did;
+            # consumers may hold or transform blocks independently.
+            positions = window[offset - window_start:end - window_start].copy()
             if groups:
                 positions = np.stack([
                     np.einsum("faj,a->fj", positions[:, group["atoms"]], group["weights"])
                     for group in groups
                 ], axis=1)
-            yield FrameBlock(offset, end, positions, source["time"][offset:end], source["box"][offset:end])
+            yield FrameBlock(offset, end, positions,
+                             times[offset - start:end - start],
+                             boxes[offset - start:end - start])

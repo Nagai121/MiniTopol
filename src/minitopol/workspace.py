@@ -27,6 +27,14 @@ class Workspace:
             Path(requested if requested is not None else self.default_path()).expanduser(),
             threshold=160).resolve()
         self._write_nesting = threading.local()
+        # Bounded LRU of completed query_results tables, validated by the
+        # catalog file stat: a new publication rewrites the catalog and
+        # invalidates entries. Arrow tables are immutable, so sharing the
+        # object is safe; filters/takes always derive new tables.
+        from collections import OrderedDict as _OD
+        self._query_cache = _OD()
+        self._query_cache_lock = threading.Lock()
+        self._query_cache_bytes = 0
         self._tier_access_lock = threading.Lock()
         self._tier_access = None
         if registered and (not self.path.is_dir() or not (self.path / "integrated.duckdb").is_file()):
@@ -104,16 +112,36 @@ class Workspace:
         if key in sessions:
             yield self
             return
-        with self.catalog() as con:
-            sessions[key] = con
-            try:
-                yield self
-            finally:
-                del sessions[key]
+        # Lazy: the connection (and its lock) is only opened by the first
+        # catalog() call inside the session, so sessions that never query
+        # the catalog pay nothing. The holder is materialized by catalog().
+        holder = {"con": None, "lock": None}
+        sessions[key] = holder
+        try:
+            yield self
+        finally:
+            del sessions[key]
+            if holder["con"] is not None:
+                holder["con"].close()
+            if holder["lock"] is not None:
+                holder["lock"].release()
 
     @contextmanager
     def catalog(self):
         existing = getattr(_query_session_local, 'connections', {}).get(str(self.path))
+        if isinstance(existing, dict):
+            # Inside a query_session: materialize once, reuse until it ends.
+            if existing["con"] is None:
+                lock = FileLock(str(self.path / "locks" / "catalog.lock"))
+                lock.acquire()
+                try:
+                    existing["con"] = duckdb.connect(str(self.path / "integrated.duckdb"))
+                except BaseException:
+                    lock.release()
+                    raise
+                existing["lock"] = lock
+            yield existing["con"]
+            return
         if existing is not None:
             yield existing
             return
@@ -306,6 +334,20 @@ class Workspace:
             from .descriptors.count_store import query
             return query(self, trajectory=trajectory, definition_id=definition_id,
                          columns=columns, start=start, stop=stop)
+        cache_key = (descriptor, trajectory, representation, definition_id,
+                     None if columns is None else tuple(columns), start, stop)
+        catalog_stat = None
+        try:
+            stat = (self.path / "integrated.duckdb").stat()
+            catalog_stat = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except OSError:
+            catalog_stat = None
+        if catalog_stat is not None:
+            with self._query_cache_lock:
+                hit = self._query_cache.get(cache_key)
+                if hit is not None and hit[0] == catalog_stat:
+                    self._query_cache.move_to_end(cache_key)
+                    return hit[1]
         clauses, args = [], []
         for field, value in (("descriptor", descriptor), ("trajectory", trajectory),
                              ("representation", representation)):
@@ -335,7 +377,20 @@ class Workspace:
                     relation = relation.filter(f"frame < {int(stop)}")
             if columns:
                 relation = relation.project(",".join('"' + c.replace('"', '""') + '"' for c in columns))
-            return relation.to_arrow_table()
+            table = relation.to_arrow_table()
+            if catalog_stat is not None:
+                size = table.get_total_buffer_size()
+                if size <= 64 * 1024**2:
+                    with self._query_cache_lock:
+                        previous = self._query_cache.pop(cache_key, None)
+                        if previous is not None:
+                            self._query_cache_bytes -= previous[1].get_total_buffer_size()
+                        self._query_cache[cache_key] = (catalog_stat, table)
+                        self._query_cache_bytes += size
+                        while self._query_cache_bytes > 256 * 1024**2 and len(self._query_cache) > 1:
+                            _, (_, evicted) = self._query_cache.popitem(last=False)
+                            self._query_cache_bytes -= evicted.get_total_buffer_size()
+            return table
 
 
 class _ManagedWriteLock:

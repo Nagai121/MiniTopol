@@ -231,6 +231,21 @@ class Cache:
             self.used = 0
 
 
+def _extract_positions(chunk, local, selected):
+    """Copy the requested frames/atoms out of one decoded chunk.
+
+    Values and order are exactly those of chunk[local][:, selected, :].
+    A full in-order atom selection is a plain frame take (fancy indexing
+    every atom costs ~20x more); other selections use np.take on each axis.
+    """
+    selection = np.asarray(selected)
+    if selection.shape == (chunk.shape[1],) and selection.size and \
+            selection[0] == 0 and selection[-1] == chunk.shape[1] - 1 and \
+            np.array_equal(selection, np.arange(chunk.shape[1])):
+        return chunk[local]
+    return np.take(np.take(chunk, local, axis=0), selection, axis=1)
+
+
 class DataProvider:
     def __init__(self, workspace, budget):
         self.workspace = Workspace(workspace)
@@ -251,6 +266,51 @@ class DataProvider:
         # A lock only for appending complete JSON lines from concurrent requests.
         # No request history is retained in memory.
         self.profile_lock = threading.Lock()
+        # Catalog-row snapshot per trajectory, validated by the catalog
+        # file's stat on every use. Result rows are immutable once published;
+        # a publication rewrites the catalog file and changes its stat, which
+        # invalidates the snapshot. This avoids a DuckDB connection (~10 ms)
+        # for every lookup a request performs.
+        self._snapshot_cache = {}
+        self._snapshot_lock = threading.Lock()
+        # Open Zarr groups/arrays per trajectory, keyed by immutable
+        # trajectory identity. Opening a group and reading array metadata
+        # costs several ms and the stored arrays never change in place.
+        self._zarr_sources = {}
+
+    def _zarr_source(self, trajectory, identity):
+        path = str(self.workspace.trajectory_path(trajectory) / "A.zarr")
+        key = (path, identity)
+        source = self._zarr_sources.get(key)
+        if source is None:
+            import zarr
+            group = zarr.open_group(path, mode="r")
+            source = (group["positions"], group["time"], group["box"])
+            self._zarr_sources[key] = source
+        return source
+
+    def _result_snapshot(self, trajectory):
+        """Rows of (descriptor, id, path) for one trajectory, stat-validated."""
+        path = self.workspace.path / "integrated.duckdb"
+        try:
+            stat = path.stat()
+            wal = Path(str(path) + "-wal")
+            wal_stat = wal.stat() if wal.exists() else None
+            key = (stat.st_mtime_ns, stat.st_size, stat.st_ino,
+                   None if wal_stat is None else (wal_stat.st_mtime_ns, wal_stat.st_size))
+        except OSError:
+            key = None
+        with self._snapshot_lock:
+            cached = self._snapshot_cache.get(trajectory)
+            if cached is not None and key is not None and cached[0] == key:
+                return cached[1]
+            with self.workspace.catalog() as con:
+                rows = con.execute(
+                    "SELECT descriptor, id, path FROM results WHERE trajectory=? "
+                    "ORDER BY descriptor, id", [trajectory]).fetchall()
+            if key is not None:
+                self._snapshot_cache[trajectory] = (key, rows)
+            return rows
 
     def _append_profile(self, record):
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -279,10 +339,8 @@ class DataProvider:
             out_box = np.empty((len(frames), 3, 3), dtype="<f4")
         # Zarr indexing below includes storage access AND codec decode.
         with _stage(trace, "zarr_open_metadata"):
-            source = zarr.open_group(
-                str(self.workspace.trajectory_path(trajectory) / "A.zarr"), mode="r")
-            position_array, time_array, box_array = (
-                source["positions"], source["time"], source["box"])
+            position_array, time_array, box_array = self._zarr_source(
+                trajectory, manifest["identity"])
             chunk_size = int(position_array.chunks[0])
         with _stage(trace, "chunk_grouping"):
             # Frame-to-chunk grouping runs as native NumPy sort/diff, avoiding
@@ -333,7 +391,8 @@ class DataProvider:
             with _stage(trace, "coordinate_extract_copy"):
                 chunk_positions, chunk_time, chunk_box = decoded
                 local_frames = requested[destinations] - first
-                out_positions[destinations] = chunk_positions[local_frames][:, selected, :]
+                out_positions[destinations] = _extract_positions(
+                    chunk_positions, local_frames, selected)
                 out_time[destinations] = chunk_time[local_frames]
                 out_box[destinations] = chunk_box[local_frames]
         return out_positions, out_time, out_box
@@ -359,6 +418,15 @@ class DataProvider:
         return items
 
     def get(self, request):
+        # Reuse one catalog connection for every lookup this request makes on
+        # this thread (catalog lookup, result paths, descriptor queries).
+        # DuckDB connection setup otherwise costs ~10 ms per lookup and a
+        # single get performs several. Values and locking scope per query are
+        # unchanged; the session only spans this request.
+        with self.workspace.query_session():
+            return self._get_wrapped(request)
+
+    def _get_wrapped(self, request):
         if not self.profiling_enabled:
             return self._get(request, None)
         trace = StageProfile()
@@ -429,13 +497,11 @@ class DataProvider:
                 catalog_rows = []
                 available = set()
             else:
-                with self.workspace.catalog() as con:
-                    # Result IDs identify immutable descriptor partitions. Their
-                    # set versions responses when fresh results are published.
-                    catalog_rows = con.execute(
-                        "SELECT descriptor, id FROM results WHERE trajectory=? "
-                        "ORDER BY descriptor, id", [tid]).fetchall()
-                    available = {name for name, _ in catalog_rows}
+                # Result IDs identify immutable descriptor partitions. Their
+                # set versions responses when fresh results are published.
+                catalog_rows = [(name, result_id) for name, result_id, _ in
+                                self._result_snapshot(tid)]
+                available = {name for name, _ in catalog_rows}
         if descriptors == ["all"]:
             descriptors = sorted(available)
             if not descriptors:
