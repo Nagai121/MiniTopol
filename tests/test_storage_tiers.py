@@ -76,6 +76,68 @@ def test_bad_external_copy_never_published(tmp_path):
     assert not list(local.rglob("*.partial-*"))
 
 
+def test_validated_internal_cache_detects_in_process_modification(tmp_path, monkeypatch):
+    import minitopol.storage_tiers as tiers
+
+    local = tmp_path / "internal" / "MiniTopol Storage"
+    path = _data(local)
+    manager = TieredStorage(local)
+    (tmp_path / "external").mkdir()
+    manager.configure(external_root=tmp_path / "external", enabled=True)
+    manager.offload("trajectories/trajectory-one")
+    manager.prune(all_cache=True)
+    assert manager.ensure("trajectories/trajectory-one")["transferred"] is True
+
+    digest_calls = 0
+    original = tiers._tree_digest
+
+    def counting(path_arg):
+        nonlocal digest_calls
+        digest_calls += 1
+        return original(path_arg)
+
+    monkeypatch.setattr(tiers, "_tree_digest", counting)
+    # Unchanged staged copy: the stat fingerprint fast path must not re-hash.
+    assert manager.ensure("trajectories/trajectory-one")["transferred"] is False
+    assert digest_calls == 0
+    staged_file = path / "A.zarr/positions/0"
+    # An added file changes the tree fingerprint and must be caught.
+    stray = path / "A.zarr/positions/stray"
+    stray.write_bytes(b"stray")
+    with pytest.raises(ValueError, match="Internal cache differs"):
+        manager.ensure("trajectories/trajectory-one")
+    assert digest_calls > 0
+    # Removing the stray file restores the verified fingerprint exactly.
+    stray.unlink()
+    digest_calls = 0
+    assert manager.ensure("trajectories/trajectory-one")["transferred"] is False
+    assert digest_calls == 0
+    # A same-length content rewrite changes mtime and must also be caught
+    # by the same long-lived process (previously served silently).
+    staged_file.write_bytes(b"POSITION DATA")
+    with pytest.raises(ValueError, match="Internal cache differs"):
+        manager.ensure("trajectories/trajectory-one")
+    assert staged_file.read_bytes() == b"POSITION DATA"
+
+
+def test_validated_external_direct_read_detects_in_process_modification(tmp_path):
+    local = tmp_path / "internal" / "MiniTopol Storage"
+    _data(local)
+    manager = TieredStorage(local)
+    (tmp_path / "external").mkdir()
+    manager.configure(external_root=tmp_path / "external", enabled=True)
+    manager.offload("trajectories/trajectory-one")
+    manager.prune(all_cache=True)
+    # Force the direct-read path: the object exceeds the soft cache budget.
+    manager.configure(cache_percent=1e-9)
+    assert manager.ensure("trajectories/trajectory-one")["direct_read"] is True
+    external_file = (tmp_path / "external" / "MiniTopol Storage"
+                     / "trajectories/trajectory-one/A.zarr/positions/0")
+    external_file.write_bytes(b"POSITION DATA")
+    with pytest.raises(IOError, match="External primary differs"):
+        manager.ensure("trajectories/trajectory-one")
+
+
 def test_missing_registered_external_fails_closed(tmp_path):
     local = tmp_path / "internal"
     _data(local)

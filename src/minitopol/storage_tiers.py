@@ -69,6 +69,27 @@ def _tree_digest(path: Path):
     return hasher.hexdigest(), total
 
 
+def _tree_stat_key(path: Path):
+    """Cheap change fingerprint for a managed tree: (mtime_ns, size, ino)
+    per file, the same stat key the catalog snapshot uses for manifests.
+    Detects rewrites, replacements, additions and removals without
+    hashing file contents; content equality still requires _tree_digest."""
+    if not path.exists() or path.is_symlink():
+        raise FileNotFoundError(f"Storage object missing or unsafe: {path}")
+    if not path.is_dir():
+        stat = path.stat()
+        return (("", stat.st_mtime_ns, stat.st_size, stat.st_ino),)
+    entries = []
+    for entry in sorted(path.rglob("*"), key=lambda p: p.as_posix()):
+        if entry.is_symlink():
+            raise ValueError(f"Symlinks are not supported in managed datasets: {entry}")
+        if entry.is_file():
+            stat = entry.stat()
+            entries.append((entry.relative_to(path).as_posix(),
+                            stat.st_mtime_ns, stat.st_size, stat.st_ino))
+    return tuple(entries)
+
+
 def _copy_verified(source: Path, destination: Path, expected=None):
     """Never publish a partial copy; preserve existing distinct files."""
     digest, size = _tree_digest(source)
@@ -122,8 +143,10 @@ class TieredStorage:
         # concurrent requests from independently consuming the same headroom.
         self._capacity_lock = FileLock(str(self.lock_root / "capacity-admission.lock"))
         self._touch_times = {}
-        # Cache verification is scoped to this process. Never trust an existing
-        # internal copy on a new Provider startup without checking its digest.
+        # Verification state is scoped to this process: relative -> (digest,
+        # stat key). Never trust an existing internal copy on a new Provider
+        # startup without checking its digest; within a process, a copy is
+        # re-verified whenever its stat key changes (see _still_valid).
         self._validated_internal = {}
         self._validated_external = {}
         # Only a Provider restart takes a fresh free-space snapshot.
@@ -425,8 +448,8 @@ class TieredStorage:
             if not internal_path.exists():
                 raise FileNotFoundError(f"Cannot offload missing internal data: {relative}")
             digest, size, copied = _copy_verified(internal_path, external_path)
-            self._validated_internal[relative] = digest
-            self._validated_external[relative] = digest
+            self._validated_internal[relative] = (digest, _tree_stat_key(internal_path))
+            self._validated_external[relative] = (digest, _tree_stat_key(external_path))
             with self._db() as db:
                 db.execute("INSERT OR REPLACE INTO tier_objects VALUES (?, 'external', ?, ?, ?)",
                            (relative, digest, size, time.time()))
@@ -450,14 +473,28 @@ class TieredStorage:
                        (time.time(), relative))
         self._touch_times[relative] = now
 
+    @staticmethod
+    def _still_valid(cache, relative, path, digest):
+        """Fast path for a copy verified earlier in this process: trust it
+        only while its stat key is unchanged. Any stat change (or a failed
+        stat walk) returns False, and the caller falls back to the full
+        digest check instead of serving the copy silently."""
+        entry = cache.get(relative)
+        if entry is None or entry[0] != digest:
+            return False
+        try:
+            return entry[1] == _tree_stat_key(path)
+        except (OSError, ValueError):
+            return False
+
     def _direct_external(self, relative, record):
         """Verify one immutable external primary before read-only direct access."""
         external = self._safe_path(self._external_root(), relative)
-        if self._validated_external.get(relative) != record[1]:
+        if not self._still_valid(self._validated_external, relative, external, record[1]):
             digest, size = _tree_digest(external)
             if digest != record[1] or size != record[2]:
                 raise IOError(f"External primary differs from its published checksum: {relative}")
-            self._validated_external[relative] = digest
+            self._validated_external[relative] = (digest, _tree_stat_key(external))
         return external
 
     def _ensure_locked(self, relative, exempt=()):
@@ -468,14 +505,16 @@ class TieredStorage:
                 raise FileNotFoundError(f"Dataset unavailable: {relative}")
             return False
         if internal.exists():
-            # A file's existence is not proof of validity. Verify once per
-            # Provider lifetime; repeated batch requests do not hash it again.
-            if self._validated_internal.get(relative) != record[1]:
+            # A file's existence is not proof of validity. The first use in
+            # this process pays a full digest check; repeated batch requests
+            # then pay only a stat fingerprint comparison, and any change
+            # falls back to the digest check instead of being served silently.
+            if not self._still_valid(self._validated_internal, relative, internal, record[1]):
                 actual, _ = _tree_digest(internal)
                 if actual != record[1]:
                     raise ValueError(
                         f"Internal cache differs from its verified primary: {relative}")
-                self._validated_internal[relative] = actual
+                self._validated_internal[relative] = (actual, _tree_stat_key(internal))
             self._touch(relative)
             return False
         external = self._safe_path(self._external_root(), relative)
@@ -514,7 +553,7 @@ class TieredStorage:
                 self._add_metric(db, "internal_copy_operations", 1)
                 self._add_metric(db, "internal_written_bytes", size)
         self._touch_times[relative] = time.monotonic()
-        self._validated_internal[relative] = record[1]
+        self._validated_internal[relative] = (record[1], _tree_stat_key(internal))
         return True
 
     def ensure(self, relative):
