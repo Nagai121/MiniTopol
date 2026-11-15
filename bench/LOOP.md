@@ -100,3 +100,53 @@ path does not fire. Flagging as a design smell worth a separate look.
 | query_results_range80 (rotating) | 45.8 | 48.3 | 1.0 |
 Output SHA-256 of every scenario buffer + full Registry scan: identical
 between baseline and optimized.
+
+## Follow-up work (2026-11-15, branch muse-work)
+
+### 12. Memory-pressure path: proportional eviction + cooldown
+AdvancedProvider._get used to clear the part and decoded-chunk caches
+outright on EVERY request while available RAM < 6 GiB (target =
+available // 5), so under sustained pressure the caches could never warm
+up. Now: the check runs at most once per second, and eviction is LRU and
+proportional -- oldest part entries, then decoded chunks, then response
+cache, only until the combined footprint fits the same target.
+_parallel_coordinates had the same pattern (clear all decoded chunks
+before a load when available < budget // 4); it now trims oldest chunks
+to a bounded share of available RAM.
+Measurement (bench/bench_pressure.py; psutil patched to 128 MiB
+available, rotating distinct requests, 1.2 s between rounds):
+original = 3 pressure events with repeated full wipes (parts 17->0 MiB,
+decoded 9->0 MiB; mixed request in round 1 costs 55 ms re-decoding);
+fixed = 1 event, decoded and response caches stay warm, later rounds
+all requests <= 8 ms. Output hashes unchanged; provider test files pass.
+
+### 13. Golden-hash stability test (tests/test_read_output_stability.py)
+The hash check used in this loop is now a repository test: golden
+SHA-256 values captured from pristine main cc682c6 for 7 Provider
+requests + Registry scan + query_results over a small synthetic
+workspace. It passes on pristine main and on this branch, so any future
+read-path change that alters one output byte fails the suite.
+
+### 14. Large-scale A/B (12288 atoms x 2048 frames, 32x atom-frames)
+Fixture tooling is parameterized (MT_BENCH_ATOMS / MT_BENCH_FRAMES /
+MT_BENCH_WS). Median ms, baseline = pristine cc682c6:
+| scenario (scaled) | main | optimized | x |
+|---|---|---|---|
+| coords range 512f | 641 | 498 | 1.29 |
+| coords random 512f | 1796 | 1748 | 1.03 |
+| coords subset 256f | 40 | 36 | 1.11 |
+| desc range 512f | 216 | 42 | 5.1 |
+| desc scattered 256f | 611 | 37 | 16.7 |
+| desc global | 89 | 2.8 | 32 |
+| desc small range | 51 | 3.0 | 17 |
+| mixed 256f | 384 | 177 | 2.2 |
+| repeat hit mixed | 52 | 66 | 0.79 |
+| registry scan 2048f | 1539 | 1473 | 1.04 |
+| query_results range | 127 | 109 | 1.17 |
+Output hashes identical at this scale too. Reading: descriptor wins
+hold at scale; coordinate reads become AGX-decode-bound (one 64-frame
+chunk = 9.4 MB at 12288 atoms), so connection/copy overhead no longer
+matters there -- the remaining lever is the codec path itself, which is
+precision-locked. The repeat-hit regression (0.79x) is noted as
+unexplained; the response is ~40 MB of shared memory at this scale and
+the difference may be lease/copy variance on this shared VM.

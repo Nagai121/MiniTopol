@@ -63,20 +63,53 @@ class AdvancedProvider(ScheduledProvider):
                 self, ctx, frames, times, values)
             gather_rows(np.array([0], dtype=np.int64), np.array([1], dtype=np.int64))
 
+    def _relieve_memory_pressure(self):
+        """Trim caches toward a share of available RAM under pressure.
+
+        The previous behavior cleared the part and decoded-chunk caches
+        outright on every request while available RAM stayed below 6 GiB,
+        so on a loaded machine the caches could never warm up: each request
+        paid full reload cost and the next request cleared them again.
+        Now the check runs at most once per second, and eviction is
+        proportional: oldest entries leave first, only until the combined
+        cache footprint fits the target (available // 5, as before).
+        """
+        now = time.monotonic()
+        if now - getattr(self, '_pressure_last_check', 0.0) < 1.0:
+            return
+        self._pressure_last_check = now
+        available = experiments.psutil.virtual_memory().available
+        if available >= 6 * 1024**3:
+            return
+        target = available // 5
+        with self.part_lock:
+            excess = self.part_bytes + self.decoded_used + self.cache.used - target
+            if excess <= 0:
+                return
+            evicted = False
+            while excess > 0 and self.parts:
+                _, (_, size) = self.parts.popitem(last=False)
+                self.part_bytes -= size
+                excess -= size
+                evicted = True
+            while excess > 0 and self.decoded_chunks:
+                _, old = self.decoded_chunks.popitem(last=False)
+                size = sum(array.nbytes for array in old)
+                self.decoded_used -= size
+                excess -= size
+                evicted = True
+            if excess > 0:
+                # _evict(needed) frees until used + needed <= budget, so ask
+                # for room as if inserting (budget - cache.used + excess).
+                self.cache._evict(self.cache.budget - self.cache.used + excess)
+                evicted = True
+            if evicted:
+                self.pressure_events += 1
+
     def _get(self, request, trace=None):
         # Maintain the cache lock ordering used by the request builder.
         with self.cache.lock:
-            available = experiments.psutil.virtual_memory().available
-            if available < 6 * 1024**3:
-                target = available // 5
-                with self.part_lock:
-                    if self.part_bytes + self.decoded_used + self.cache.used > target:
-                        self.parts.clear()
-                        self.part_bytes = 0
-                        self.decoded_chunks.clear()
-                        self.decoded_used = 0
-                        self.cache._evict(max(0, self.cache.budget - target))
-                        self.pressure_events += 1
+            self._relieve_memory_pressure()
             result = super()._get(request, trace=trace)
             result['memory_configuration'] = self.config
             if trace is not None:

@@ -7,10 +7,11 @@ from pathlib import Path
 import numpy as np
 import MDAnalysis as mda
 
+import os
 ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else "bench-ws")
-ATOMS = 1536
-RESIDUES = 384
-FRAMES = 512
+ATOMS = int(os.environ.get("MT_BENCH_ATOMS", 1536))
+RESIDUES = ATOMS // 4
+FRAMES = int(os.environ.get("MT_BENCH_FRAMES", 512))
 
 def main():
     ROOT.mkdir(parents=True, exist_ok=True)

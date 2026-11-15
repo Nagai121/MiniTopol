@@ -123,9 +123,15 @@ class ExperimentalProvider(runtime.DataProvider):
                 np.array([len(frames)], dtype=np.int64),
             ))
             group_ids = sorted_groups[boundaries[:-1]]
-        if psutil.virtual_memory().available < self.cache.budget // 4:
-            self.decoded_chunks.clear()
-            self.decoded_used = 0
+        available = psutil.virtual_memory().available
+        if available < self.cache.budget // 4:
+            # Under pressure, trim the oldest decoded chunks down to a
+            # bounded share of available RAM instead of dropping the whole
+            # decoded cache before every coordinate load.
+            limit = min(self.decoded_budget, max(8 * 1024**2, available // 8))
+            while self.decoded_used > limit and self.decoded_chunks:
+                _, old = self.decoded_chunks.popitem(last=False)
+                self.decoded_used -= sum(array.nbytes for array in old)
         cached, missing, keys = {}, [], {}
         for group_value in group_ids:
             group = int(group_value)

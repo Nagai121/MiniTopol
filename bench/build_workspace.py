@@ -8,8 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from minitopol import Workspace, convert
 from minitopol.descriptors import DescriptorDefinition, ResultStore
 
+import os
 ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else "bench-ws")
-FRAMES = 512
+FRAMES = int(os.environ.get("MT_BENCH_FRAMES", 512))
+ATOMS = int(os.environ.get("MT_BENCH_ATOMS", 1536))
 PAIRS = 256
 
 def main():
@@ -31,8 +33,8 @@ def main():
                             "value": pa.array(rng.random(FRAMES * PAIRS).astype(np.float32))}))
     # Global descriptor
     store.publish(tid, DescriptorDefinition("rmsf", "test", "A", "global", "angstrom"), 0, FRAMES,
-                  pa.table({"point": pa.array(range(1536), type=pa.int64()),
-                            "value": pa.array(rng.random(1536))}))
+                  pa.table({"point": pa.array(range(ATOMS), type=pa.int64()),
+                            "value": pa.array(rng.random(ATOMS))}))
     print("published")
 
 if __name__ == "__main__":

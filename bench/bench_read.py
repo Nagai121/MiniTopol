@@ -15,7 +15,8 @@ from minitopol import Workspace
 from minitopol.registry import Registry
 from minitopol.provider.tiered import TieredProvider
 
-WS = Path(__file__).resolve().parents[1] / "bench-ws" / "storage"
+import os
+WS = Path(__file__).resolve().parents[1] / os.environ.get("MT_BENCH_WS", "bench-ws") / "storage"
 BUDGET = 512 * 1024**2
 
 # This VM reports only ~0.5 GiB free RAM, which makes the Provider's
@@ -34,6 +35,16 @@ def tid_of():
     ws = Workspace(WS)
     return ws.list_trajectories()[0][0]
 
+def dims(tid):
+    """(frames, atoms) of the fixture trajectory, from its Zarr store."""
+    import zarr
+    from minitopol.registry import Registry
+    registry = Registry(Workspace(WS))
+    manifest = registry.manifest(tid)
+    group = zarr.open_group(str(registry._read_trajectory_path(tid) / "A.zarr"), mode="r")
+    positions = group["positions"]
+    return int(positions.shape[0]), int(positions.shape[1])
+
 def shm_bytes(part):
     seg = shared_memory.SharedMemory(name=part["shm"], create=False)
     try:
@@ -49,31 +60,35 @@ def run_get(provider, request):
         provider.cache.release(reply["lease"])
 
 def scenarios(tid):
+    frames_total, atoms_total = dims(tid)
     rng = np.random.default_rng(123)
-    rand128 = sorted(rng.choice(512, size=128, replace=False).tolist())
-    rand64 = sorted(rng.choice(512, size=64, replace=False).tolist())
+    n_range = max(1, frames_total // 4)
+    n_small = max(1, frames_total // 8)
+    rand_range = sorted(rng.choice(frames_total, size=n_range, replace=False).tolist())
+    rand_small = sorted(rng.choice(frames_total, size=n_small, replace=False).tolist())
     return {
-        "coords_range128": {"trajectory": tid, "coordinates": True, "descriptors": [], "frames": list(range(0, 128))},
-        "coords_random128": {"trajectory": tid, "coordinates": True, "descriptors": [], "frames": rand128},
-        "coords_subset64": {"trajectory": tid, "coordinates": True, "descriptors": [], "frames": list(range(0, 64)), "atoms": list(range(0, 1536, 6))},
-        "desc_range128": {"trajectory": tid, "coordinates": False, "descriptors": ["pairdist"], "frames": list(range(0, 128))},
-        "desc_scattered64": {"trajectory": tid, "coordinates": False, "descriptors": ["pairdist"], "frames": rand64},
-        "desc_global": {"trajectory": tid, "coordinates": False, "descriptors": ["rmsf"], "frames": list(range(0, 64))},
-        "desc_small_range": {"trajectory": tid, "coordinates": False, "descriptors": ["sample"], "frames": list(range(0, 128))},
-        "mixed64": {"trajectory": tid, "coordinates": True, "descriptors": ["sample", "pairdist"], "frames": list(range(0, 64))},
+        "coords_range128": {"trajectory": tid, "coordinates": True, "descriptors": [], "frames": list(range(0, n_range))},
+        "coords_random128": {"trajectory": tid, "coordinates": True, "descriptors": [], "frames": rand_range},
+        "coords_subset64": {"trajectory": tid, "coordinates": True, "descriptors": [], "frames": list(range(0, n_small)), "atoms": list(range(0, atoms_total, 6))},
+        "desc_range128": {"trajectory": tid, "coordinates": False, "descriptors": ["pairdist"], "frames": list(range(0, n_range))},
+        "desc_scattered64": {"trajectory": tid, "coordinates": False, "descriptors": ["pairdist"], "frames": rand_small},
+        "desc_global": {"trajectory": tid, "coordinates": False, "descriptors": ["rmsf"], "frames": list(range(0, n_small))},
+        "desc_small_range": {"trajectory": tid, "coordinates": False, "descriptors": ["sample"], "frames": list(range(0, n_range))},
+        "mixed64": {"trajectory": tid, "coordinates": True, "descriptors": ["sample", "pairdist"], "frames": list(range(0, n_small))},
     }
 
 def rotated(request, k):
     """Shift frame window by k*7 so each rep misses the exact-response cache."""
     req = dict(request)
     frames = req["frames"]
+    total = rotated.total
     span = max(frames) - min(frames)
     if len(frames) == span + 1:  # contiguous
-        start = (min(frames) + k * 7) % (512 - span)
+        start = (min(frames) + k * 7) % (total - span)
         req["frames"] = list(range(start, start + span + 1))
     else:
-        shift = (k * 7) % 512
-        req["frames"] = sorted({(f + shift) % 512 for f in frames})
+        shift = (k * 7) % total
+        req["frames"] = sorted({(f + shift) % total for f in frames})
     return req
 
 def bench_one(fn, reps=9):
@@ -90,6 +105,7 @@ def main():
     provider = TieredProvider(WS, BUDGET)
     try:
         sc = scenarios(tid)
+        rotated.total = dims(tid)[0]
         if mode == "hashes":
             out = {}
             for name, req in sc.items():
@@ -102,7 +118,8 @@ def main():
                 h.update(block.positions.tobytes()); h.update(block.time.tobytes()); h.update(block.box.tobytes())
             out["registry_blocks"] = h.hexdigest()
             ws = Workspace(WS)
-            t = ws.query_results(descriptor="pairdist", trajectory=tid, start=10, stop=90)
+            span = max(1, dims(tid)[0] // 512)
+            t = ws.query_results(descriptor="pairdist", trajectory=tid, start=10 * span, stop=90 * span)
             out["query_results_rows"] = t.num_rows
             Path(__file__).with_name("hashes.json").write_text(json.dumps(out, indent=1))
             print("hashes written")
@@ -119,16 +136,18 @@ def main():
         results["repeat_hit_mixed64"] = bench_one(lambda k: run_get(provider, req), reps=15)
         # Registry full scan
         reg = Registry(Workspace(WS))
+        total_frames = dims(tid)[0]
         def scan(k):
             n = 0
             for block in reg.blocks(tid):
                 n += block.positions.shape[0]
-            assert n == 512
+            assert n == total_frames
         results["registry_scan512"] = bench_one(scan, reps=5)
         # query_results direct
         ws = Workspace(WS)
+        span = max(1, total_frames // 512)
         results["query_results_range80"] = bench_one(
-            lambda k: ws.query_results(descriptor="pairdist", trajectory=tid, start=k % 100, stop=k % 100 + 80), reps=7)
+            lambda k: ws.query_results(descriptor="pairdist", trajectory=tid, start=(k % 100) * span, stop=(k % 100) * span + 80 * span), reps=7)
         print(json.dumps(results, indent=1))
     finally:
         provider.cache.close()
